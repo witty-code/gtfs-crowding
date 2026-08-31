@@ -1,4 +1,4 @@
-/* בדיקת ליבה: בונה פיד GTFS סינתטי כ-ZIP אמיתי ומריץ עליו את gtfs-core.js */
+/* בדיקת ליבה: בונה פידים סינתטיים כ-ZIP אמיתי ומריץ עליהם את gtfs-core.js */
 import { readFileSync } from 'node:fs';
 import { deflateRawSync, crc32 } from 'node:zlib';
 import vm from 'node:vm';
@@ -10,56 +10,57 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 /* ---------------- ZIP writer מינימלי ---------------- */
 function makeZip(files) {
   const enc = new TextEncoder();
-  const locals = [];
-  const central = [];
+  const locals = [], central = [];
   let offset = 0;
   for (const [name, text] of Object.entries(files)) {
-    const nameB = enc.encode(name);
-    const raw = enc.encode(text);
-    const comp = deflateRawSync(raw);
-    const crc = crc32(raw) >>> 0;
-
+    const nameB = enc.encode(name), raw = enc.encode(text);
+    const comp = deflateRawSync(raw), crc = crc32(raw) >>> 0;
     const lh = Buffer.alloc(30 + nameB.length);
-    lh.writeUInt32LE(0x04034b50, 0);
-    lh.writeUInt16LE(20, 4); lh.writeUInt16LE(0, 6); lh.writeUInt16LE(8, 8);
-    lh.writeUInt32LE(0, 10);
-    lh.writeUInt32LE(crc, 14);
-    lh.writeUInt32LE(comp.length, 18);
-    lh.writeUInt32LE(raw.length, 22);
-    lh.writeUInt16LE(nameB.length, 26); lh.writeUInt16LE(0, 28);
-    Buffer.from(nameB).copy(lh, 30);
+    lh.writeUInt32LE(0x04034b50, 0); lh.writeUInt16LE(20, 4); lh.writeUInt16LE(8, 8);
+    lh.writeUInt32LE(crc, 14); lh.writeUInt32LE(comp.length, 18); lh.writeUInt32LE(raw.length, 22);
+    lh.writeUInt16LE(nameB.length, 26); Buffer.from(nameB).copy(lh, 30);
     locals.push(lh, comp);
-
     const ch = Buffer.alloc(46 + nameB.length);
-    ch.writeUInt32LE(0x02014b50, 0);
-    ch.writeUInt16LE(20, 4); ch.writeUInt16LE(20, 6); ch.writeUInt16LE(0, 8); ch.writeUInt16LE(8, 10);
-    ch.writeUInt32LE(0, 12);
-    ch.writeUInt32LE(crc, 16);
-    ch.writeUInt32LE(comp.length, 20);
-    ch.writeUInt32LE(raw.length, 24);
-    ch.writeUInt16LE(nameB.length, 28);
-    ch.writeUInt32LE(offset, 42);
+    ch.writeUInt32LE(0x02014b50, 0); ch.writeUInt16LE(20, 4); ch.writeUInt16LE(20, 6); ch.writeUInt16LE(8, 10);
+    ch.writeUInt32LE(crc, 16); ch.writeUInt32LE(comp.length, 20); ch.writeUInt32LE(raw.length, 24);
+    ch.writeUInt16LE(nameB.length, 28); ch.writeUInt32LE(offset, 42);
     Buffer.from(nameB).copy(ch, 46);
-    central.push(ch);
-    offset += lh.length + comp.length;
+    central.push(ch); offset += lh.length + comp.length;
   }
-  const cd = Buffer.concat(central);
-  const eocd = Buffer.alloc(22);
-  eocd.writeUInt32LE(0x06054b50, 0);
-  eocd.writeUInt16LE(central.length, 8);
-  eocd.writeUInt16LE(central.length, 10);
-  eocd.writeUInt32LE(cd.length, 12);
-  eocd.writeUInt32LE(offset, 16);
+  const cd = Buffer.concat(central), eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0); eocd.writeUInt16LE(central.length, 8);
+  eocd.writeUInt16LE(central.length, 10); eocd.writeUInt32LE(cd.length, 12); eocd.writeUInt32LE(offset, 16);
   return Buffer.concat([...locals, cd, eocd]);
 }
 
-/* ---------------- פיד סינתטי ---------------- */
-// A(1) תחנת מוצא: 3 יציאות ב-07:00:00 בדיוק  → רמה א' = 3
-// B(2) תחנת מוצא: 08:00, 08:03, 08:07          → רמה א' = 1, חלון ±4 = 3
-// C(3) תחנת ביניים בלבד: 09:00, 09:02, 09:05   → חלון ±2 = 2
-// D(4)+E(5) רציפים תחת תחנת אם P(100)          → בדיקת parent_station
-// F(6) יציאה ב-25:10 (אחרי חצות)
-// שירות WK = א'-ה', שירות SAT = שבת בלבד
+/* ---------------- טעינת הליבה ---------------- */
+const ctx = { TextDecoder, TextEncoder, DecompressionStream, setTimeout, console, Date };
+ctx.self = ctx;
+vm.createContext(ctx);
+vm.runInContext(readFileSync(path.join(here, '..', 'gtfs-core.js'), 'utf8'), ctx);
+const Core = ctx.GTFSCore;
+
+let pass = 0, fail = 0;
+function check(name, got, want) {
+  const ok = JSON.stringify(got) === JSON.stringify(want);
+  if (ok) { pass++; console.log('  ✓ ' + name); }
+  else { fail++; console.log('  ✗ ' + name + '  → קיבלתי ' + JSON.stringify(got) + ' במקום ' + JSON.stringify(want)); }
+}
+const load = async (zip, opts) => {
+  const src = await Core.makeSource([new File([zip], 'gtfs.zip')]);
+  const feed = await Core.scanFeed(src, { unit: opts.unit || 'platform' });
+  await Core.loadStopTimes(src, feed, opts);
+  return { src, feed };
+};
+const byStopOf = (feed, res) => {
+  const m = {};
+  for (const r of res.allRows) m[feed.stops.id[r.u]] = r;
+  return m;
+};
+
+/* ==================================================================== */
+/* פיד א' — קלאסי, עם דגלי ימי שבוע ב-calendar.txt                       */
+/* ==================================================================== */
 const stops = [
   'stop_id,stop_code,stop_name,stop_desc,stop_lat,stop_lon,location_type,parent_station,zone_id',
   '1,11111,"תחנה א","רחוב: הרצל 1 עיר: תל אביב רציף:  קומה: ",32.10,34.80,0,,11111',
@@ -70,165 +71,227 @@ const stops = [
   '6,66666,"תחנה ו","רחוב: לילה 6 עיר: אילת רציף:  קומה: ",29.55,34.95,0,,66666',
   '100,10000,"מסוף מרכזי","רחוב: המסוף עיר: באר שבע רציף:  קומה: ",31.25,34.79,1,,10000'
 ].join('\n');
-
 const agency = 'agency_id,agency_name\n1,אגד\n2,דן';
-const routes = [
-  'route_id,agency_id,route_short_name,route_long_name,route_desc',
-  'r1,1,1,קו 1,10001-1-0',
-  'r2,1,2,קו 2,10002-1-0',
-  'r3,2,3,קו 3,10003-1-0',
-  'r4,2,4,קו 4,10004-1-0',
-  'r5,1,5,קו 5,10005-1-0',
-  'r6,1,6,קו 6,10006-1-0'
-].join('\n');
+const routes = ['route_id,agency_id,route_short_name,route_long_name,route_desc',
+  'r1,1,1,קו 1,10001-1-0', 'r2,1,2,קו 2,10002-1-0', 'r3,2,3,קו 3,10003-1-0',
+  'r4,2,4,קו 4,10004-1-0', 'r5,1,5,קו 5,10005-1-0', 'r6,1,6,קו 6,10006-1-0'].join('\n');
+const calendar = ['service_id,sunday,monday,tuesday,wednesday,thursday,friday,saturday,start_date,end_date',
+  'WK,1,1,1,1,1,0,0,20260101,20260131',
+  'SAT,0,0,0,0,0,0,1,20260101,20260131'].join('\n');
 
-const calendar = [
-  'service_id,sunday,monday,tuesday,wednesday,thursday,friday,saturday,start_date,end_date',
-  'WK,1,1,1,1,1,0,0,20260101,20261231',
-  'SAT,0,0,0,0,0,0,1,20260101,20261231'
-].join('\n');
-
-const calendar_dates = 'service_id,date,exception_type\nWK,20260406,2';
-
-const tripRows = [];
-const stRows = [];
-function addTrip(id, route, svc, stops2) {
+const tripRows = [], stRows = [];
+function addTrip(id, route, svc, list) {
   tripRows.push([id, route, svc, 'יעד ' + id, '0'].join(','));
-  stops2.forEach(([stop, time, seq]) => {
-    stRows.push([id, time, time, stop, seq].join(','));
-  });
+  list.forEach(([stop, time, seq]) => stRows.push([id, time, time, stop, seq].join(',')));
 }
-// A: שלוש יציאות באותה דקה (07:00) — כולן תחנת מוצא ב-1
 addTrip('tA1', 'r1', 'WK', [['1', '07:00:00', '1'], ['3', '07:20:00', '2']]);
 addTrip('tA2', 'r2', 'WK', [['1', '07:00:00', '1'], ['3', '07:25:00', '2']]);
 addTrip('tA3', 'r3', 'WK', [['1', '07:00:30', '1'], ['3', '07:30:00', '2']]);
-// A: נסיעה של שבת באותה דקה — לא אמורה להיספר ביום ראשון
 addTrip('tA4', 'r4', 'SAT', [['1', '07:00:00', '1']]);
-// B: 08:00 / 08:03 / 08:07 — חלון ±4 מגיע ל-3
 addTrip('tB1', 'r1', 'WK', [['2', '08:00:00', '1']]);
 addTrip('tB2', 'r2', 'WK', [['2', '08:03:00', '1']]);
 addTrip('tB3', 'r3', 'WK', [['2', '08:07:00', '1']]);
-// C: תחנת ביניים בלבד — 09:00 / 09:02 / 09:05
 addTrip('tC1', 'r4', 'WK', [['6', '08:50:00', '1'], ['3', '09:00:00', '2']]);
 addTrip('tC2', 'r5', 'WK', [['6', '08:52:00', '1'], ['3', '09:02:00', '2']]);
 addTrip('tC3', 'r6', 'WK', [['6', '08:55:00', '1'], ['3', '09:05:00', '2']]);
-// D/E: שני רציפים תחת תחנת אם 100, שניהם ב-10:00
 addTrip('tD1', 'r1', 'WK', [['4', '10:00:00', '1']]);
 addTrip('tE1', 'r2', 'WK', [['5', '10:00:00', '1']]);
-// F: אחרי חצות — stop_sequence לא ממוין, המוצא הוא seq=1 ב-6
 addTrip('tF1', 'r3', 'WK', [['1', '25:40:00', '5'], ['6', '25:10:00', '1']]);
 
-const trips = ['trip_id,route_id,service_id,trip_headsign,direction_id', ...tripRows].join('\n');
-const stop_times = ['trip_id,arrival_time,departure_time,stop_id,stop_sequence', ...stRows].join('\n');
-
-const zipBuf = makeZip({
-  'agency.txt': agency, 'stops.txt': stops, 'routes.txt': routes,
-  'calendar.txt': calendar, 'calendar_dates.txt': calendar_dates,
-  'trips.txt': trips, 'stop_times.txt': stop_times
+const zipA = makeZip({
+  'agency.txt': agency, 'stops.txt': stops, 'routes.txt': routes, 'calendar.txt': calendar,
+  'calendar_dates.txt': 'service_id,date,exception_type\nWK,20260106,2',
+  'trips.txt': ['trip_id,route_id,service_id,trip_headsign,direction_id', ...tripRows].join('\n'),
+  'stop_times.txt': ['trip_id,arrival_time,departure_time,stop_id,stop_sequence', ...stRows].join('\n')
 });
 
-/* ---------------- טעינת הליבה ---------------- */
-const ctx = { TextDecoder, TextEncoder, DecompressionStream, setTimeout, console, Date };
-ctx.self = ctx;
-vm.createContext(ctx);
-vm.runInContext(readFileSync(path.join(here, '..', 'gtfs-core.js'), 'utf8'), ctx);
-const Core = ctx.GTFSCore;
+console.log('=== פיד א׳: calendar.txt עם דגלי ימים ===');
+// 2026-01-04 הוא יום ראשון
+const base = { mode: 'all', unit: 'platform', day: 0, date: null, fromHour: 0, toHour: 27, maxRows: 1e6 };
+const A = await load(zipA, base);
+const rA = Core.analyze(A.feed, { day: 0, fromHour: 0, toHour: 27, winOrigin: 4, winMid: 2, minCount: 2 });
+const sA = byStopOf(A.feed, rA);
 
-const zipFile = new File([zipBuf], 'gtfs.zip');
+check('תחנה 1 — רמה א׳ = 3', sA['1'].maxExact, 3);
+check('תחנה 1 — סה"כ 4 יציאות', sA['1'].n, 4);
+check('תחנה 1 — 3 מהן מוצא', sA['1'].nOrigin, 3);
+check('תחנה 2 — חלון מוצא ±4 = 3', sA['2'].winOrg, 3);
+check('תחנה 2 — חלון כללי ±2 = 1', sA['2'].winAll, 1);
+check('תחנה 3 — חלון ביניים ±2 = 2', sA['3'].winAll, 2);
+check('תחנה 3 — אין יציאות מוצא', sA['3'].nOrigin, 0);
+check('תחנה 6 — מוצא מזוהה גם ב-seq לא ממוין', sA['6'].nOrigin, 4);
 
-/* ---------------- הרצה ---------------- */
-let pass = 0, fail = 0;
-function check(name, got, want) {
-  const ok = JSON.stringify(got) === JSON.stringify(want);
-  if (ok) { pass++; console.log('  ✓ ' + name); }
-  else { fail++; console.log('  ✗ ' + name + '  → קיבלתי ' + JSON.stringify(got) + ' במקום ' + JSON.stringify(want)); }
+console.log('\n--- מעקב אחרי תחנת המקור של כל יציאה (_ST) ---');
+check('כל יציאה יודעת מאיזה stop_id היא יצאה',
+  [...new Set(Array.from(sA['1']._ST))].map(i => A.feed.stops.id[i]), ['1']);
+
+console.log('\n--- קיבוץ לפי תחנת אם ---');
+const Ast = await load(zipA, { ...base, unit: 'station' });
+const rAst = Core.analyze(Ast.feed, { day: 0, fromHour: 0, toHour: 27, winOrigin: 4, winMid: 2, minCount: 2 });
+const sAst = byStopOf(Ast.feed, rAst);
+check('רציפים 4+5 מתמזגים לתחנה 100', sAst['100'].maxExact, 2);
+check('רציף 4 לא מופיע בנפרד', sAst['4'] === undefined, true);
+check('שתי היציאות המאוחדות מגיעות משני רציפים שונים',
+  [...new Set(Array.from(sAst['100']._ST))].map(i => Ast.feed.stops.id[i]).sort(), ['4', '5']);
+
+console.log('\n--- טווח תאריכים ---');
+check('טווח הפיד זוהה', [A.feed.coverage.min, A.feed.coverage.max], ['20260101', '20260131']);
+const jan4 = A.feed.coverage.dates.find(d => d.date === '20260104'); // ראשון
+const jan5 = A.feed.coverage.dates.find(d => d.date === '20260105'); // שני
+const jan6 = A.feed.coverage.dates.find(d => d.date === '20260106'); // שלישי — WK מבוטל
+const jan3 = A.feed.coverage.dates.find(d => d.date === '20260103'); // שבת
+check('יום ראשון 04/01 — 12 נסיעות WK', jan4 ? jan4.trips : null, 12);
+check('יום שלישי 06/01 מבוטל ולכן לא ברשימה', jan6, undefined);
+check('שבת 03/01 — נסיעה אחת', jan3 ? jan3.trips : null, 1);
+check('כל תאריך יודע את יום השבוע שלו', jan5 ? jan5.dow : null, 1);
+
+console.log('\n--- ניתוח לפי תאריך מסוים ---');
+const Ad = await load(zipA, { ...base, day: null, date: '20260104' });
+const rAd = Core.analyze(Ad.feed, { date: '20260104', fromHour: 0, toHour: 27, winOrigin: 4, winMid: 2, minCount: 2 });
+check('04/01 (ראשון) מחזיר אותה תוצאה כמו יום ראשון', byStopOf(Ad.feed, rAd)['1'].maxExact, 3);
+const Aexc = await load(zipA, { ...base, day: null, date: '20260106' });
+const rAexc = Core.analyze(Aexc.feed, { date: '20260106', fromHour: 0, toHour: 27, winOrigin: 4, winMid: 2, minCount: 2 });
+check('06/01 מבוטל ב-calendar_dates — אפס יציאות', rAexc.stats.departures, 0);
+
+/* ==================================================================== */
+/* פיד ב' — סגנון "Gtfs_10_days": calendar ללא דגלי ימים                 */
+/* ==================================================================== */
+const cal10 = ['service_id,sunday,monday,tuesday,wednesday,thursday,friday,saturday,start_date,end_date',
+  'S1,0,0,0,0,0,0,0,20260901,20260910',
+  'S2,0,0,0,0,0,0,0,20260901,20260910'].join('\n');
+const dates10 = ['service_id,date,exception_type',
+  'S1,20260901,1', 'S1,20260902,1', 'S1,20260903,1',
+  'S2,20260902,1', 'S2,20260903,1', 'S2,20260904,1'].join('\n');
+const t10 = [], st10 = [];
+function addTrip10(id, svc, stop, time) {
+  t10.push([id, 'r1', svc, 'יעד', '0'].join(','));
+  st10.push([id, time, time, stop, 1].join(','));
 }
+// שלוש יציאות באותה דקה מתחנה 1 בשירות S1
+addTrip10('x1', 'S1', '1', '06:00:00');
+addTrip10('x2', 'S1', '1', '06:00:00');
+addTrip10('x3', 'S1', '1', '06:00:00');
+// שתיים בשירות S2 מאותה תחנה, גם ב-06:00
+addTrip10('y1', 'S2', '1', '06:00:00');
+addTrip10('y2', 'S2', '1', '06:00:00');
 
-const src = await Core.makeSource([zipFile]);
-console.log('רשומות ב-ZIP:', src.names.join(', '));
+const zipB = makeZip({
+  'agency.txt': agency, 'stops.txt': stops, 'routes.txt': routes,
+  'calendar.txt': cal10, 'calendar_dates.txt': dates10,
+  'trips.txt': ['trip_id,route_id,service_id,trip_headsign,direction_id', ...t10].join('\n'),
+  'stop_times.txt': ['trip_id,arrival_time,departure_time,stop_id,stop_sequence', ...st10].join('\n')
+});
 
-// --- מבחן 1: מצב "כל העצירות", יום ראשון (day=0)
-const optsLoad = { mode: 'all', unit: 'platform', day: 0, date: null, fromHour: 0, toHour: 27, maxRows: 1e6 };
-const feed = await Core.loadFeed(src, optsLoad);
-console.log('\nפיד: ' + feed.nStops + ' תחנות, ' + feed.nTrips + ' נסיעות, ' + feed.keptRows + ' עצירות נשמרו');
+console.log('\n=== פיד ב׳: סגנון Gtfs_10_days (calendar_dates בלבד) ===');
+const srcB = await Core.makeSource([new File([zipB], 'g10.zip')]);
+const feedB = await Core.scanFeed(srcB, { unit: 'platform' });
+check('נקלטו 2 שירותים', feedB.nServices, 2);
+check('אף שירות אינו מסומן בימי שבוע', feedB.diag.nServicesWithDayFlags, 0);
+check('נוצרה אזהרה שמסבירה למה סינון יום בשבוע ייכשל',
+  feedB.warnings.some(w => w.includes('calendar_dates')), true);
+check('טווח התאריכים זוהה', [feedB.coverage.min, feedB.coverage.max], ['20260901', '20260910']);
+check('4 תאריכים עם שירות', feedB.coverage.dates.map(d => d.date), ['20260901', '20260902', '20260903', '20260904']);
+check('01/09 — רק S1 פעיל (3 נסיעות)', feedB.coverage.dates[0].trips, 3);
+check('02/09 — שני השירותים (5 נסיעות)', feedB.coverage.dates[1].trips, 5);
+check('04/09 — רק S2 (2 נסיעות)', feedB.coverage.dates[3].trips, 2);
 
-const A = Core.analyze(feed, { day: 0, fromHour: 0, toHour: 27, winOrigin: 4, winMid: 2, minCount: 2 });
-const byStop = {};
-for (const r of A.allRows) byStop[feed.stops.id[r.u]] = r;
+await Core.loadStopTimes(srcB, feedB, { mode: 'origins', fromHour: 0, toHour: 27 });
 
-console.log('\nמבחני ניתוח (יום ראשון, כל העצירות, רציף בודד):');
-check('תחנה 1 — רמה א׳ = 3 (שתי נסיעות ב-07:00:00 + אחת ב-07:00:30, שבת לא נספרת)', byStop['1'].maxExact, 3);
-check('תחנה 1 — סה"כ יציאות = 4 (3 בבוקר + 1 אחרי חצות)', byStop['1'].n, 4);
-check('תחנה 1 — כל היציאות הן תחנת מוצא? לא, tF1 עוצרת שם ב-seq 5', byStop['1'].nOrigin, 3);
-check('תחנה 2 — רמה א׳ = 1', byStop['2'].maxExact, 1);
-check('תחנה 2 — חלון מוצא ±4 = 3', byStop['2'].winOrg, 3);
-// 08:00/08:03/08:07 — הפער המינימלי הוא 3 דק', ולכן חלון ±2 אינו תופס אף זוג
-check('תחנה 2 — חלון כללי ±2 = 1 (הפערים גדולים מ-2 דק׳)', byStop['2'].winAll, 1);
-check('תחנה 3 — אין יציאות מוצא', byStop['3'].nOrigin, 0);
-check('תחנה 3 — חלון ביניים ±2 = 2', byStop['3'].winAll, 2);
-check('תחנה 3 — חלון מוצא = 0 (אין מוצא)', byStop['3'].winOrg, 0);
-check('תחנה 6 — המוצא של tF1 מזוהה למרות seq לא ממוין', byStop['6'].nOrigin, 4);
-check('שעה מעל 24:00 נשמרת', Core.fmtTime(feed.origins.time[feed.trips.headsign.indexOf('יעד tF1')]), '25:10');
+console.log('\n--- זהו הבאג המקורי: סינון לפי יום בשבוע ---');
+const dowRes = Core.analyze(feedB, { day: 2, fromHour: 0, toHour: 27, winOrigin: 4, winMid: 2, minCount: 2 });
+check('סינון "יום שלישי" מחזיר אפס — בדיוק התסמין שדווח', dowRes.stats.departures, 0);
 
-// --- מבחן 2: קיבוץ לפי תחנת אם
-const feedSt = await Core.loadFeed(src, Object.assign({}, optsLoad, { unit: 'station' }));
-const Ast = Core.analyze(feedSt, { day: 0, fromHour: 0, toHour: 27, winOrigin: 4, winMid: 2, minCount: 2 });
-const stMap = {};
-for (const r of Ast.allRows) stMap[feedSt.stops.id[r.u]] = r;
-console.log('\nמבחני קיבוץ לפי תחנת אם:');
-check('רציפים 4+5 מתמזגים לתחנה 100', stMap['100'] ? stMap['100'].maxExact : null, 2);
-check('רציף 4 כבר לא מופיע בנפרד', stMap['4'] === undefined, true);
-console.log('  ‣ בלי קיבוץ, רציף 4 לבדו: רמה א׳ =', byStop['4'].maxExact, '(כצפוי 1)');
-check('בלי קיבוץ רציף 4 = 1', byStop['4'].maxExact, 1);
+console.log('\n--- והתיקון: סינון לפי תאריך ---');
+const d1 = Core.analyze(feedB, { date: '20260901', fromHour: 0, toHour: 27, winOrigin: 4, winMid: 2, minCount: 2 });
+check('01/09 מוצא 3 יציאות באותה דקה', byStopOf(feedB, d1)['1'].maxExact, 3);
+const d2 = Core.analyze(feedB, { date: '20260902', fromHour: 0, toHour: 27, winOrigin: 4, winMid: 2, minCount: 2 });
+check('02/09 מוצא 5 (שני השירותים פעילים באמת)', byStopOf(feedB, d2)['1'].maxExact, 5);
+const d4 = Core.analyze(feedB, { date: '20260904', fromHour: 0, toHour: 27, winOrigin: 4, winMid: 2, minCount: 2 });
+check('04/09 מוצא 2', byStopOf(feedB, d4)['1'].maxExact, 2);
 
-// --- מבחן 3: יום שבת
-console.log('\nמבחן סינון יום:');
-check('ניתוח שבת על פיד שנטען לראשון מסומן כלא־תואם',
-  Core.analyzeCompatible(feed, { mode: 'all', unit: 'platform', day: 6, fromHour: 0, toHour: 27 }), 'שינוי היום בשבוע');
-check('ניתוח ראשון על אותו פיד — תואם',
-  Core.analyzeCompatible(feed, { mode: 'all', unit: 'platform', day: 0, fromHour: 7, toHour: 20 }), null);
-const feedSat = await Core.loadFeed(src, Object.assign({}, optsLoad, { day: 6 }));
-const Asat = Core.analyze(feedSat, { day: 6, fromHour: 0, toHour: 27, winOrigin: 4, winMid: 2, minCount: 1 });
-const satStop1 = Asat.allRows.find(r => feedSat.stops.id[r.u] === '1');
-check('בשבת יש רק יציאה אחת מתחנה 1', satStop1 ? satStop1.n : 0, 1);
-check('במצב "מוצא בלבד" אין צורך בטעינה מחדש לשום יום',
-  Core.analyzeCompatible(await Core.loadFeed(src, Object.assign({}, optsLoad, { mode: 'origins' })),
-    { mode: 'origins', unit: 'platform', day: 6, fromHour: 0, toHour: 27 }), null);
+/* ==================================================================== */
+/* פיד ג' — ספירת יתר בסינון יום בשבוע (ריבוי גרסאות)                    */
+/* ==================================================================== */
+const calMulti = ['service_id,sunday,monday,tuesday,wednesday,thursday,friday,saturday,start_date,end_date',
+  'V1,1,1,1,1,1,0,0,20260901,20260907',
+  'V2,1,1,1,1,1,0,0,20260908,20260914'].join('\n');
+const tM = [], stM = [];
+for (const [id, svc] of [['m1', 'V1'], ['m2', 'V1'], ['m3', 'V2'], ['m4', 'V2']]) {
+  tM.push([id, 'r1', svc, 'יעד', '0'].join(','));
+  stM.push([id, '06:00:00', '06:00:00', '1', 1].join(','));
+}
+const zipC = makeZip({
+  'agency.txt': agency, 'stops.txt': stops, 'routes.txt': routes, 'calendar.txt': calMulti,
+  'trips.txt': ['trip_id,route_id,service_id,trip_headsign,direction_id', ...tM].join('\n'),
+  'stop_times.txt': ['trip_id,arrival_time,departure_time,stop_id,stop_sequence', ...stM].join('\n')
+});
 
-// --- מבחן 4: מצב "תחנות מוצא בלבד"
-const feedO = await Core.loadFeed(src, Object.assign({}, optsLoad, { mode: 'origins' }));
-const Ao = Core.analyze(feedO, { day: 0, fromHour: 0, toHour: 27, winOrigin: 4, winMid: 2, minCount: 2 });
-const oMap = {};
-for (const r of Ao.allRows) oMap[feedO.stops.id[r.u]] = r;
-console.log('\nמבחני מצב "תחנות מוצא בלבד":');
-check('תחנה 1 — רמה א׳ = 3 גם במצב מוצא', oMap['1'].maxExact, 3);
-check('תחנה 1 — סופרת רק 3 יציאות מוצא (בלי המעבר ב-25:40)', oMap['1'].n, 3);
-check('תחנה 3 — לא מופיעה כלל (אין ממנה יציאות מוצא)', oMap['3'] === undefined, true);
-check('תחנה 2 — חלון מוצא ±4 = 3', oMap['2'].winOrg, 3);
+console.log('\n=== פיד ג׳: שתי גרסאות לוח זמנים חופפות באותו יום בשבוע ===');
+const srcC = await Core.makeSource([new File([zipC], 'multi.zip')]);
+const feedC = await Core.scanFeed(srcC, { unit: 'platform' });
+await Core.loadStopTimes(srcC, feedC, { mode: 'origins', fromHour: 0, toHour: 27 });
+const cDow = Core.analyze(feedC, { day: 1, fromHour: 0, toHour: 27, winOrigin: 4, winMid: 2, minCount: 2 });
+const cDate = Core.analyze(feedC, { date: '20260907', fromHour: 0, toHour: 27, winOrigin: 4, winMid: 2, minCount: 2 });
+check('סינון "יום שני" סופר 4 — ספירת יתר, שתי הגרסאות יחד', byStopOf(feedC, cDow)['1'].maxExact, 4);
+check('סינון 07/09 סופר 2 — הנכון', byStopOf(feedC, cDate)['1'].maxExact, 2);
+const warnMulti = Core.dayOverlapWarning(feedC, 1);
+check('הכלי מתריע מראש על ספירת היתר', !!warnMulti && warnMulti.includes('יותר מפעם אחת'), true);
+check('אין התרעה כשאין חפיפה (פיד א׳)', Core.dayOverlapWarning(A.feed, 0), null);
 
-// --- מבחן 5: טווח שעות
-const Ahr = Core.analyze(feed, { day: 0, fromHour: 8, toHour: 8, winOrigin: 4, winMid: 2, minCount: 1 });
-const hrMap = {};
-for (const r of Ahr.allRows) hrMap[feed.stops.id[r.u]] = r;
-console.log('\nמבחן טווח שעות (08:00–08:59):');
-// תחנה 6 פעילה גם היא: יציאות המוצא של tC1/tC2/tC3 הן ב-08:50/08:52/08:55
-check('תחנות 2 ו-6 פעילות בלבד', Object.keys(hrMap).sort(), ['2', '6']);
-check('3 יציאות מתחנה 2', hrMap['2'].n, 3);
-// מרכז 08:52 → חלון [08:48, 08:56] תופס את שלוש היציאות
-check('תחנה 6 — חלון מוצא ±4 = 3 (08:50 / 08:52 / 08:55)', hrMap['6'].winOrg, 3);
-check('תחנה 6 — חלון כללי ±2 = 2 (08:50 ו-08:52)', hrMap['6'].winAll, 2);
+/* ==================================================================== */
+/* ביטול פעולה                                                          */
+/* ==================================================================== */
+console.log('\n=== ביטול פעולה ===');
+let aborted = false;
+try {
+  const srcAb = await Core.makeSource([new File([zipA], 'gtfs.zip')]);
+  await Core.scanFeed(srcAb, { unit: 'platform' }, null, () => true);
+} catch (e) { aborted = !!e.aborted; }
+check('scanFeed נעצר כשמבקשים ביטול', aborted, true);
 
-// --- מבחן 6: חריגת calendar_dates לפי תאריך
-const Aexc = Core.analyze(feed, { date: '20260406', fromHour: 0, toHour: 27, winOrigin: 4, winMid: 2, minCount: 1 });
-console.log('\nמבחן calendar_dates (6/4/2026 — WK מבוטל, יום שני):');
-check('אין אף יציאה', Aexc.stats.departures, 0);
-
-// --- מבחן 7: peakWindow ישירות
-console.log('\nמבחני peakWindow:');
-check('[0,120,240,360] עם W=120 → 3', Core.peakWindow(Int32Array.from([0, 120, 240, 360]), null, 4, 120).max, 3);
-check('[0,600] עם W=120 → 1', Core.peakWindow(Int32Array.from([0, 600]), null, 2, 120).max, 1);
+/* ==================================================================== */
+/* תאימות ניתוח ו-peakWindow                                            */
+/* ==================================================================== */
+console.log('\n=== תאימות ו-peakWindow ===');
+check('שינוי מצב מחייב קריאה חוזרת',
+  Core.analyzeCompatible(A.feed, { mode: 'origins', unit: 'platform', day: 0, fromHour: 0, toHour: 27 }),
+  'שינוי היקף העצירות (מוצא / כולל ביניים)');
+check('אותן הגדרות — תואם',
+  Core.analyzeCompatible(A.feed, { mode: 'all', unit: 'platform', day: 0, fromHour: 7, toHour: 20 }), null);
+check('במצב מוצא כל תאריך מיידי',
+  Core.analyzeCompatible(feedB, { mode: 'origins', unit: 'platform', date: '20260903', fromHour: 0, toHour: 27 }), null);
+check('[0,120,240,360] W=120 → 3', Core.peakWindow(Int32Array.from([0, 120, 240, 360]), null, 4, 120).max, 3);
+check('[0,600] W=120 → 1', Core.peakWindow(Int32Array.from([0, 600]), null, 2, 120).max, 1);
 check('ריק → 0', Core.peakWindow(Int32Array.from([]), null, 0, 120).max, 0);
 check('W=0 סופר זהות מדויקת', Core.peakWindow(Int32Array.from([5, 5, 5, 9]), null, 4, 0).max, 3);
+check('fmtDateHe', Core.fmtDateHe('20260901'), '01/09/2026');
+
+/* ==================================================================== */
+/* שינוי יחידת ניתוח על פיד שכבר נסרק                                    */
+/* ==================================================================== */
+console.log('\n=== החלפת יחידת ניתוח אחרי סריקה ===');
+{
+  const src = await Core.makeSource([new File([zipA], 'gtfs.zip')]);
+  const feed = await Core.scanFeed(src, { unit: 'platform' });
+  await Core.loadStopTimes(src, feed, { mode: 'origins', fromHour: 0, toHour: 27 });
+  const asPlat = byStopOf(feed, Core.analyze(feed,
+    { day: 0, fromHour: 0, toHour: 27, winOrigin: 4, winMid: 2, minCount: 2 }));
+  check('לפני ההחלפה — רציף 4 עומד בפני עצמו', asPlat['4'].maxExact, 1);
+
+  const needsReload = Core.setUnit(feed, 'station');
+  check('במצב מוצא אין צורך בקריאה חוזרת', needsReload, false);
+  check('feed.unit התעדכן', feed.unit, 'station');
+  const asStation = byStopOf(feed, Core.analyze(feed,
+    { day: 0, fromHour: 0, toHour: 27, winOrigin: 4, winMid: 2, minCount: 2 }));
+  check('אחרי ההחלפה — רציפים 4+5 מאוחדים לתחנה 100', asStation['100'].maxExact, 2);
+  check('רציף 4 כבר לא נפרד', asStation['4'] === undefined, true);
+  check('setUnit לאותה יחידה לא עושה כלום', Core.setUnit(feed, 'station'), false);
+
+  // במצב 'all' חובה קריאה חוזרת כי הדליים מקובצים לפי יחידה
+  const feed2 = await Core.scanFeed(src, { unit: 'platform' });
+  await Core.loadStopTimes(src, feed2, { mode: 'all', day: 0, fromHour: 0, toHour: 27, maxRows: 1e6 });
+  check('במצב "כולל ביניים" נדרשת קריאה חוזרת', Core.setUnit(feed2, 'station'), true);
+}
 
 console.log('\n' + (fail === 0 ? '✅ ' : '❌ ') + pass + ' עברו, ' + fail + ' נכשלו');
 process.exit(fail ? 1 : 0);

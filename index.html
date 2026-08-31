@@ -6,6 +6,7 @@
 <title>ניתוח עומס רציפים מקובץ GTFS</title>
 <meta name="description" content="כלי דפדפן לזיהוי תחנות ורציפים שבהם מתוכננות יותר מדי יציאות אוטובוס בו-זמנית.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%231d4ed8'/%3E%3Crect x='6' y='7' width='8' height='14' rx='2' fill='%23fff'/%3E%3Crect x='17' y='7' width='8' height='14' rx='2' fill='%23fff' opacity='.55'/%3E%3Ccircle cx='9' cy='24' r='2' fill='%23fff'/%3E%3Ccircle cx='22' cy='24' r='2' fill='%23fff' opacity='.55'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="vendor/leaflet.css">
 <style>
 :root{
   --bg:#f6f7f9; --panel:#ffffff; --ink:#141821; --muted:#5c6675; --line:#e3e7ec;
@@ -32,15 +33,22 @@ body{
 .wrap{max-width:1180px;margin:0 auto;padding:24px 18px 80px}
 header h1{font-size:26px;margin:0 0 6px;letter-spacing:-.3px}
 header p{margin:0;color:var(--muted);max-width:70ch}
+
+/* אייקונים */
+.ic{width:1em;height:1em;fill:none;stroke:currentColor;stroke-width:2;
+  stroke-linecap:round;stroke-linejoin:round;vertical-align:-.14em;flex:none}
+.ic.lg{width:1.15em;height:1.15em}
+@keyframes spin{to{transform:rotate(360deg)}}
+.spin{animation:spin 1s linear infinite}
+
 .panel{
   background:var(--panel); border:1px solid var(--line); border-radius:var(--radius);
   padding:18px; margin-top:18px; box-shadow:var(--shadow);
 }
-.panel > h2{font-size:15px;margin:0 0 14px;text-transform:none;color:var(--muted);font-weight:600;
-  letter-spacing:.02em}
+.panel > h2{font-size:15px;margin:0 0 14px;color:var(--muted);font-weight:600;
+  display:flex;align-items:center;gap:8px}
 .step{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;
-  border-radius:50%;background:var(--accent);color:#fff;font-size:12px;font-weight:700;
-  margin-inline-end:8px;vertical-align:-4px}
+  border-radius:50%;background:var(--accent);color:#fff;font-size:12px;font-weight:700;flex:none}
 
 /* אזור העלאה */
 #drop{
@@ -48,9 +56,9 @@ header p{margin:0;color:var(--muted);max-width:70ch}
   cursor:pointer; transition:.15s; background:transparent;
 }
 #drop:hover,#drop.over{border-color:var(--accent);background:var(--accent-soft)}
-#drop b{display:block;font-size:16px;margin-bottom:4px}
+#drop b{display:flex;align-items:center;justify-content:center;gap:8px;font-size:16px;margin-bottom:4px}
 #drop span{color:var(--muted);font-size:13.5px}
-#fileInfo{margin-top:12px;font-size:13.5px;color:var(--muted)}
+#fileInfo{margin-top:12px;font-size:13.5px;color:var(--muted);display:flex;align-items:center;gap:6px}
 #fileInfo.ok{color:var(--ok)}
 
 /* הגדרות */
@@ -66,24 +74,47 @@ select:focus,input:focus{outline:2px solid var(--accent);outline-offset:-1px;bor
 button{
   font:inherit;font-weight:600;border-radius:9px;border:1px solid var(--line);
   background:var(--panel);color:var(--ink);padding:9px 16px;cursor:pointer;transition:.15s;
+  display:inline-flex;align-items:center;gap:7px;
 }
 button:hover:not(:disabled){border-color:var(--accent);color:var(--accent)}
 button:disabled{opacity:.45;cursor:not-allowed}
 button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
 button.primary:hover:not(:disabled){filter:brightness(1.08);color:#fff}
+button.danger{border-color:var(--a);color:var(--a)}
+button.sm{padding:5px 10px;font-size:12.5px}
 .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:16px}
 
 /* התקדמות */
 #progress{display:none;margin-top:16px}
 #progress.on{display:block}
-.bar{height:6px;background:var(--line);border-radius:99px;overflow:hidden}
+.bar{height:6px;background:var(--line);border-radius:99px;overflow:hidden;position:relative}
 .bar > i{display:block;height:100%;width:0;background:var(--accent);transition:width .25s;border-radius:99px}
-#progText{font-size:13px;color:var(--muted);margin-top:8px}
+.bar.indet > i{width:35% !important;animation:slide 1.1s ease-in-out infinite}
+@keyframes slide{0%{margin-inline-start:-35%}100%{margin-inline-start:100%}}
+#progText{font-size:13px;color:var(--muted);margin-top:8px;display:flex;gap:14px;flex-wrap:wrap;
+  align-items:center;font-variant-numeric:tabular-nums}
+#progText b{color:var(--ink);font-weight:600}
 
 /* התראות */
-.note{border-radius:9px;padding:10px 13px;font-size:13.5px;margin-top:10px;border:1px solid transparent}
+.note{border-radius:9px;padding:10px 13px;font-size:13.5px;margin-top:10px;border:1px solid transparent;
+  display:flex;gap:9px;align-items:flex-start;line-height:1.5}
+.note .ic{margin-top:3px}
 .note.warn{background:var(--b-bg);color:var(--b);border-color:currentColor}
 .note.err{background:var(--a-bg);color:var(--a);border-color:currentColor}
+.note.info{background:var(--accent-soft);color:var(--accent);border-color:currentColor}
+.note.ok{background:var(--ok-bg);color:var(--ok);border-color:currentColor}
+
+/* פרטי פיד */
+#feedInfo{display:none}
+#feedInfo.on{display:block}
+.kv{display:grid;gap:8px 20px;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));font-size:13.5px}
+.kv div{display:flex;justify-content:space-between;gap:10px;border-bottom:1px dashed var(--line);padding-bottom:5px}
+.kv span{color:var(--muted)}
+.kv b{font-variant-numeric:tabular-nums}
+details.diag{margin-top:12px;font-size:13px}
+details.diag summary{cursor:pointer;color:var(--muted);font-weight:600}
+details.diag pre{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:10px;
+  overflow:auto;font-size:12px;max-height:260px;direction:ltr;text-align:left}
 
 /* כרטיסי סיכום */
 .cards{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-bottom:6px}
@@ -91,6 +122,12 @@ button.primary:hover:not(:disabled){filter:brightness(1.08);color:#fff}
 .card b{display:block;font-size:25px;line-height:1.25;font-variant-numeric:tabular-nums;letter-spacing:-.5px}
 .card span{font-size:12.5px;color:var(--muted)}
 .card.a b{color:var(--a)} .card.b b{color:var(--b)}
+
+/* טאבים */
+.tabs{display:flex;gap:6px;margin:16px 0 0;border-bottom:1px solid var(--line)}
+.tabs button{border:none;background:transparent;border-radius:0;border-bottom:2px solid transparent;
+  padding:8px 14px;color:var(--muted)}
+.tabs button.on{color:var(--accent);border-bottom-color:var(--accent)}
 
 /* טבלה */
 .tools{display:flex;gap:10px;flex-wrap:wrap;align-items:end;margin:16px 0 12px}
@@ -103,7 +140,6 @@ thead th{
   cursor:pointer;user-select:none;font-weight:600;
 }
 thead th:hover{color:var(--accent)}
-thead th::after{content:"";opacity:.5}
 thead th.sorted::after{content:" ▾"}
 thead th.sorted.asc::after{content:" ▴"}
 tbody tr{cursor:pointer}
@@ -118,29 +154,51 @@ td small{display:block;font-weight:400;color:var(--muted);font-size:11.5px}
 .tag.n{background:var(--line);color:var(--muted)}
 input.len{width:72px;padding:4px 6px;font-size:12.5px;text-align:center}
 
-/* מגירת פירוט — הדף כולו RTL, ולכן העמדה פיזית ומפורשת */
-#backdrop{
-  position:fixed;inset:0;background:rgba(10,14,20,.45);z-index:49;
-  opacity:0;pointer-events:none;transition:opacity .25s;
-}
+/* מפה */
+#mapWrap{display:none;height:min(70vh,620px);border:1px solid var(--line);border-radius:10px;
+  overflow:hidden;margin-top:12px}
+#mapWrap.on{display:block}
+#map{height:100%;width:100%;background:var(--bg)}
+.leaflet-container{font:inherit}
+.maplegend{background:var(--panel);padding:8px 11px;border-radius:8px;border:1px solid var(--line);
+  font-size:12px;line-height:1.9;color:var(--ink);box-shadow:var(--shadow)}
+.maplegend i{display:inline-block;width:11px;height:11px;border-radius:50%;margin-inline-end:6px;
+  vertical-align:-1px;border:1.5px solid #fff}
+.leaflet-popup-content{margin:11px 13px;direction:rtl;text-align:right;font-size:13px}
+.leaflet-popup-content b{font-size:14px}
+
+/* מגירת פירוט */
+#backdrop{position:fixed;inset:0;background:rgba(10,14,20,.45);z-index:49;
+  opacity:0;pointer-events:none;transition:opacity .25s}
 #backdrop.open{opacity:1;pointer-events:auto}
 #drawer{
-  position:fixed;top:0;bottom:0;right:0;width:min(480px,100%);
+  position:fixed;top:0;bottom:0;right:0;width:min(560px,100%);
   background:var(--panel);border-left:1px solid var(--line);
   box-shadow:0 0 40px rgba(0,0,0,.25);
   transform:translateX(100%);transition:transform .25s;z-index:50;
   display:flex;flex-direction:column;visibility:hidden;
 }
 #drawer.open{transform:none;visibility:visible}
-#drawer header{padding:16px 18px;border-bottom:1px solid var(--line);display:flex;
+#drawer > header{padding:15px 18px;border-bottom:1px solid var(--line);display:flex;
   justify-content:space-between;align-items:flex-start;gap:12px}
-#drawer header h3{margin:0 0 3px;font-size:17px}
-#drawer header p{margin:0;font-size:12.5px;color:var(--muted)}
-#drawer .body{overflow:auto;padding:14px 18px 30px;flex:1}
-#drawer table{font-size:13px}
-.close{border:none;background:transparent;font-size:22px;line-height:1;padding:2px 6px;color:var(--muted)}
-.peak{background:var(--a-bg) !important}
-.peakb{background:var(--b-bg) !important}
+#drawer > header h3{margin:0 0 3px;font-size:17px}
+#drawer > header p{margin:0;font-size:12.5px;color:var(--muted)}
+#dTools{padding:10px 18px;border-bottom:1px solid var(--line);display:flex;gap:10px;
+  flex-wrap:wrap;align-items:end}
+#dTools label.f{min-width:120px;flex:1}
+#drawer .body{overflow:auto;padding:0 0 30px;flex:1}
+.close{border:none;background:transparent;padding:2px 6px;color:var(--muted)}
+.mingrp{border-bottom:1px solid var(--line)}
+.mingrp > .hd{display:flex;align-items:center;gap:9px;padding:9px 18px;font-weight:700;
+  position:sticky;top:0;background:var(--panel);z-index:1;font-size:13.5px}
+.mingrp > .hd .t{font-variant-numeric:tabular-nums;font-size:15px}
+.mingrp.lvA > .hd{background:var(--a-bg);color:var(--a)}
+.mingrp.lvB > .hd{background:var(--b-bg);color:var(--b)}
+.mingrp table{font-size:12.8px}
+.mingrp td{border-bottom:none;padding:5px 18px}
+.mingrp tr:not(:last-child) td{border-bottom:1px solid var(--line)}
+.tid{font-family:ui-monospace,Consolas,monospace;font-size:11px;color:var(--muted);direction:ltr;
+  display:inline-block}
 .legend{font-size:12px;color:var(--muted);margin-top:10px;line-height:1.7}
 .legend b{color:var(--ink)}
 footer{margin-top:28px;font-size:12.5px;color:var(--muted);text-align:center;line-height:1.8}
@@ -153,6 +211,9 @@ a{color:var(--accent)}
 </style>
 </head>
 <body>
+
+<svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true"><symbol id="i-upload" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" x2="12" y1="3" y2="15" /></symbol><symbol id="i-play" viewBox="0 0 24 24"><polygon points="6 3 20 12 6 21 6 3" /></symbol><symbol id="i-square" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2" /></symbol><symbol id="i-download" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" x2="12" y1="15" y2="3" /></symbol><symbol id="i-map" viewBox="0 0 24 24"><path d="M14.106 5.553a2 2 0 0 0 1.788 0l3.659-1.83A1 1 0 0 1 21 4.619v12.764a1 1 0 0 1-.553.894l-4.553 2.277a2 2 0 0 1-1.788 0l-4.212-2.106a2 2 0 0 0-1.788 0l-3.659 1.83A1 1 0 0 1 3 19.381V6.618a1 1 0 0 1 .553-.894l4.553-2.277a2 2 0 0 1 1.788 0z" /><path d="M15 5.764v15" /><path d="M9 3.236v15" /></symbol><symbol id="i-table" viewBox="0 0 24 24"><path d="M9 3H5a2 2 0 0 0-2 2v4m6-6h10a2 2 0 0 1 2 2v4M9 3v18m0 0h10a2 2 0 0 0 2-2V9M9 21H5a2 2 0 0 1-2-2V9m0 0h18" /></symbol><symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8" /><path d="m21 21-4.3-4.3" /></symbol><symbol id="i-settings" viewBox="0 0 24 24"><path d="M20 7h-9" /><path d="M14 17H5" /><circle cx="17" cy="17" r="3" /><circle cx="7" cy="7" r="3" /></symbol><symbol id="i-alert-triangle" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3" /><path d="M12 9v4" /><path d="M12 17h.01" /></symbol><symbol id="i-alert-circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /><line x1="12" x2="12" y1="8" y2="12" /><line x1="12" x2="12.01" y1="16" y2="16" /></symbol><symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /><path d="M12 16v-4" /><path d="M12 8h.01" /></symbol><symbol id="i-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /><path d="m9 12 2 2 4-4" /></symbol><symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></symbol><symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" /></symbol><symbol id="i-bus" viewBox="0 0 24 24"><path d="M8 6v6" /><path d="M15 6v6" /><path d="M2 12h19.6" /><path d="M18 18h3s.5-1.7.8-2.8c.1-.4.2-.8.2-1.2 0-.4-.1-.8-.2-1.2l-1.4-5C20.1 6.8 19.1 6 18 6H4a2 2 0 0 0-2 2v10h3" /><circle cx="7" cy="18" r="2" /><path d="M9 18h5" /><circle cx="16" cy="18" r="2" /></symbol><symbol id="i-ruler" viewBox="0 0 24 24"><path d="M21.3 15.3a2.4 2.4 0 0 1 0 3.4l-2.6 2.6a2.4 2.4 0 0 1-3.4 0L2.7 8.7a2.41 2.41 0 0 1 0-3.4l2.6-2.6a2.41 2.41 0 0 1 3.4 0Z" /><path d="m14.5 12.5 2-2" /><path d="m11.5 9.5 2-2" /><path d="m8.5 6.5 2-2" /><path d="m17.5 15.5 2-2" /></symbol><symbol id="i-calendar" viewBox="0 0 24 24"><path d="M8 2v4" /><path d="M16 2v4" /><rect width="18" height="18" x="3" y="4" rx="2" /><path d="M3 10h18" /><path d="M8 14h.01" /><path d="M12 14h.01" /><path d="M16 14h.01" /><path d="M8 18h.01" /><path d="M12 18h.01" /><path d="M16 18h.01" /></symbol><symbol id="i-chevron-left" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6" /></symbol><symbol id="i-file-text" viewBox="0 0 24 24"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" /><path d="M14 2v4a2 2 0 0 0 2 2h4" /><path d="M10 9H8" /><path d="M16 13H8" /><path d="M16 17H8" /></symbol><symbol id="i-loader" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-6.219-8.56" /></symbol><symbol id="i-map-pin" viewBox="0 0 24 24"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z" /><circle cx="12" cy="10" r="3" /></symbol><symbol id="i-external-link" viewBox="0 0 24 24"><path d="M15 3h6v6" /><path d="M10 14 21 3" /><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /></symbol><symbol id="i-refresh" viewBox="0 0 24 24"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" /><path d="M21 3v5h-5" /><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" /><path d="M8 16H3v5" /></symbol><symbol id="i-filter" viewBox="0 0 24 24"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" /></symbol></svg>
+
 <div class="wrap">
 
 <header>
@@ -161,21 +222,34 @@ a{color:var(--accent)}
      הקובץ אינו נשלח לשום שרת.</p>
 </header>
 
+<div id="bootMsgs"></div>
+
 <!-- ========== שלב 1: קובץ ========== -->
 <section class="panel">
-  <h2><span class="step">1</span>קובץ GTFS</h2>
+  <h2><span class="step">1</span> קובץ GTFS</h2>
   <div id="drop" tabindex="0" role="button">
-    <b>גרור לכאן קובץ GTFS.zip</b>
+    <b><svg class="ic lg"><use href="#i-upload"></use></svg> גרור לכאן קובץ GTFS.zip</b>
     <span>או לחץ לבחירה — אפשר גם להעלות קבצי txt בודדים
       (stops, trips, stop_times, routes, calendar, calendar_dates, agency)</span>
   </div>
   <input type="file" id="file" multiple accept=".zip,.txt" class="hide">
   <div id="fileInfo"></div>
+  <div class="row">
+    <button id="scan" class="primary" disabled><svg class="ic"><use href="#i-search"></use></svg> סרוק את הפיד</button>
+    <span class="hint">שלב מהיר שקורא את התחנות, הקווים ולוח השנה — בלי הקובץ הכבד.</span>
+  </div>
+</section>
+
+<!-- ========== פרטי הפיד ========== -->
+<section class="panel" id="feedInfo">
+  <h2><svg class="ic"><use href="#i-file-text"></use></svg> מה יש בפיד</h2>
+  <div class="kv" id="feedKv"></div>
+  <details class="diag"><summary>אבחון מלא (להעתקה)</summary><pre id="diagPre"></pre></details>
 </section>
 
 <!-- ========== שלב 2: הגדרות ========== -->
 <section class="panel">
-  <h2><span class="step">2</span>הגדרות ניתוח</h2>
+  <h2><span class="step">2</span> הגדרות ניתוח</h2>
   <div class="grid">
     <label class="f"><span>אילו עצירות לנתח</span>
       <select id="mode">
@@ -190,59 +264,55 @@ a{color:var(--accent)}
         <option value="platform" selected>רציף בודד (stop_id)</option>
         <option value="station">תחנת אם (parent_station)</option>
       </select>
-      <div class="hint">אם בפיד אין parent_station, שתי האפשרויות זהות.</div>
     </label>
 
-    <label class="f"><span>יום</span>
+    <label class="f"><span>סינון לפי</span>
+      <select id="filterBy">
+        <option value="date" selected>תאריך מסוים (מדויק)</option>
+        <option value="dow">יום בשבוע</option>
+      </select>
+      <div class="hint">תאריך מסוים מתחשב ב-calendar_dates ומונע ספירה כפולה של גרסאות לוח זמנים.</div>
+    </label>
+
+    <label class="f" id="dateWrap"><span>תאריך מהפיד</span>
+      <select id="dateSel"><option>— סרוק פיד תחילה —</option></select>
+    </label>
+
+    <label class="f hide" id="dowWrap"><span>יום בשבוע</span>
       <select id="day">
         <option value="0">ראשון</option><option value="1" selected>שני</option>
         <option value="2">שלישי</option><option value="3">רביעי</option>
         <option value="4">חמישי</option><option value="5">שישי</option>
         <option value="6">שבת</option>
-        <option value="date">— תאריך מסוים —</option>
       </select>
-      <div class="hint">בתאריך מסוים נלקחים בחשבון גם חריגי calendar_dates.</div>
     </label>
 
-    <label class="f hide" id="dateWrap"><span>תאריך</span>
-      <input type="date" id="date">
-    </label>
-
-    <label class="f"><span>משעה</span>
-      <select id="fromHour"></select>
-    </label>
-    <label class="f"><span>עד שעה (כולל)</span>
-      <select id="toHour"></select>
-    </label>
+    <label class="f"><span>משעה</span><select id="fromHour"></select></label>
+    <label class="f"><span>עד שעה (כולל)</span><select id="toHour"></select></label>
 
     <label class="f"><span>חלון רמה ב׳ — תחנת מוצא (±דק׳)</span>
-      <input type="number" id="winOrigin" value="4" min="0" max="30" step="1">
-    </label>
+      <input type="number" id="winOrigin" value="4" min="0" max="30" step="1"></label>
     <label class="f"><span>חלון רמה ב׳ — תחנת ביניים (±דק׳)</span>
-      <input type="number" id="winMid" value="2" min="0" max="30" step="1">
-    </label>
+      <input type="number" id="winMid" value="2" min="0" max="30" step="1"></label>
 
     <label class="f"><span>אורך תחנה ברירת מחדל (מ׳)</span>
       <input type="number" id="defaultLen" value="24" min="6" max="500" step="1">
-      <div class="hint">אפשר לדרוס לכל תחנה בנפרד בטבלה.</div>
-    </label>
+      <div class="hint">אפשר לדרוס לכל תחנה בנפרד בטבלה.</div></label>
     <label class="f"><span>אורך אוטובוס (מ׳)</span>
-      <input type="number" id="busLen" value="12" min="4" max="30" step="0.5">
-    </label>
+      <input type="number" id="busLen" value="12" min="4" max="30" step="0.5"></label>
     <label class="f"><span>סף דיווח מינימלי</span>
-      <input type="number" id="minCount" value="2" min="2" max="50" step="1">
-      <div class="hint">אל תציג תחנות שבהן השיא נמוך מערך זה.</div>
-    </label>
+      <input type="number" id="minCount" value="2" min="2" max="50" step="1"></label>
   </div>
 
   <div class="row">
-    <button id="run" class="primary" disabled>הרץ ניתוח</button>
-    <button id="export" disabled>ייצוא CSV</button>
+    <button id="run" class="primary" disabled><svg class="ic"><use href="#i-play"></use></svg> הרץ ניתוח</button>
+    <button id="stop" class="danger hide"><svg class="ic"><use href="#i-square"></use></svg> עצור</button>
+    <button id="export" disabled><svg class="ic"><use href="#i-download"></use></svg> ייצוא CSV</button>
     <span id="staleNote" class="hint hide"></span>
   </div>
 
   <div id="progress">
-    <div class="bar"><i id="progBar"></i></div>
+    <div class="bar" id="progBarWrap"><i id="progBar"></i></div>
     <div id="progText"></div>
   </div>
   <div id="msgs"></div>
@@ -250,7 +320,7 @@ a{color:var(--accent)}
 
 <!-- ========== שלב 3: תוצאות ========== -->
 <section class="panel hide" id="results">
-  <h2><span class="step">3</span>תוצאות</h2>
+  <h2><span class="step">3</span> תוצאות <span id="resultWhen" class="hint" style="margin:0"></span></h2>
   <div class="cards" id="cards"></div>
 
   <div class="tools">
@@ -270,7 +340,12 @@ a{color:var(--accent)}
       </select></label>
   </div>
 
-  <div class="tblwrap">
+  <div class="tabs">
+    <button id="tabTable" class="on"><svg class="ic"><use href="#i-table"></use></svg> טבלה</button>
+    <button id="tabMap"><svg class="ic"><use href="#i-map"></use></svg> מפה</button>
+  </div>
+
+  <div class="tblwrap" id="tblWrap">
     <table id="tbl">
       <thead><tr>
         <th data-k="grade">דירוג</th>
@@ -288,6 +363,8 @@ a{color:var(--accent)}
     </table>
   </div>
 
+  <div id="mapWrap"><div id="map"></div></div>
+
   <div class="legend">
     <b>רמה א׳</b> — יציאות שמתוכננות לאותה דקה בדיוק מאותו רציף. תכנון בלתי אפשרי.<br>
     <b>רמה ב׳</b> — יציאות בטווח של ±<span class="wo">4</span> דק׳ בתחנת מוצא, או ±<span class="wm">2</span> דק׳ בתחנת ביניים.<br>
@@ -301,16 +378,25 @@ a{color:var(--accent)}
 </footer>
 </div>
 
-<!-- מגירת פירוט -->
 <div id="backdrop"></div>
 <aside id="drawer" aria-hidden="true">
   <header>
     <div><h3 id="dTitle">—</h3><p id="dSub"></p></div>
-    <button class="close" id="dClose" title="סגור">×</button>
+    <button class="close" id="dClose" title="סגור"><svg class="ic lg"><use href="#i-x"></use></svg></button>
   </header>
+  <div id="dTools">
+    <label class="f"><span>רציף / תחנה פנימית</span><select id="dPlat"><option value="">הכול</option></select></label>
+    <label class="f"><span>סוג יציאה</span><select id="dType">
+      <option value="all">הכול</option><option value="origin">מוצא בלבד</option>
+      <option value="mid">ביניים בלבד</option></select></label>
+    <label class="f"><span>הצג</span><select id="dOnly">
+      <option value="all">כל הדקות</option><option value="multi" selected>רק דקות עם חפיפה</option>
+    </select></label>
+  </div>
   <div class="body" id="dBody"></div>
 </aside>
 
+<script src="vendor/leaflet.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

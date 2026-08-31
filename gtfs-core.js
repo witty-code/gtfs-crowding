@@ -5,9 +5,27 @@
  * מונחים:
  *   יחידת ניתוח (unit) = רציף בודד (stop_id) או תחנת-אם (parent_station), לפי ההגדרה.
  *   תחנת מוצא         = היציאה הראשונה של הנסיעה (stop_sequence המינימלי של ה-trip).
+ *
+ * הטעינה דו-שלבית:
+ *   scanFeed()      — קורא הכול חוץ מ-stop_times.txt. מהיר, ומגלה את טווח התאריכים.
+ *   loadStopTimes() — השלב הכבד, רץ רק אחרי שהמשתמש בחר תאריך וטווח שעות.
  */
 (function (global) {
   'use strict';
+
+  /* ==================================================================== */
+  /* ביטול פעולה                                                          */
+  /* ==================================================================== */
+
+  function AbortError() {
+    const e = new Error('הפעולה בוטלה על ידי המשתמש');
+    e.name = 'AbortError';
+    e.aborted = true;
+    return e;
+  }
+  function checkAbort(abort) {
+    if (abort && abort()) throw AbortError();
+  }
 
   /* ==================================================================== */
   /* ZIP                                                                  */
@@ -136,8 +154,8 @@
   }
 
   /**
-   * קורא CSV בזרימה. onHeader מקבל מערך שמות עמודות, onRow מקבל מערך ערכים.
-   * onProgress(bytesRead, rowsRead) נקרא אחת לכמה מקטעים.
+   * קורא CSV בזרימה.
+   * onProgress(bytesRead, rowsRead) נקרא אחת לכמה מקטעים; אם הוא זורק — הקריאה נעצרת.
    */
   async function streamCsv(stream, onHeader, onRow, onProgress) {
     const reader = stream.getReader();
@@ -161,29 +179,33 @@
       }
     };
 
-    for (;;) {
-      const r = await reader.read();
-      if (r.done) break;
-      bytes += r.value.byteLength;
-      buf += dec.decode(r.value, { stream: true });
-      let start = 0;
-      let nl;
-      while ((nl = buf.indexOf('\n', start)) !== -1) {
-        handleLine(buf.slice(start, nl));
-        start = nl + 1;
+    try {
+      for (;;) {
+        const r = await reader.read();
+        if (r.done) break;
+        bytes += r.value.byteLength;
+        buf += dec.decode(r.value, { stream: true });
+        let start = 0;
+        let nl;
+        while ((nl = buf.indexOf('\n', start)) !== -1) {
+          handleLine(buf.slice(start, nl));
+          start = nl + 1;
+        }
+        buf = start > 0 ? buf.slice(start) : buf;
+        sinceReport += r.value.byteLength;
+        if (onProgress && sinceReport > 4 * 1024 * 1024) {
+          sinceReport = 0;
+          onProgress(bytes, rows);
+          // מאפשר ל-Worker לנשום, לשלוח התקדמות ולקלוט בקשת עצירה
+          await new Promise(function (res) { setTimeout(res, 0); });
+        }
       }
-      buf = start > 0 ? buf.slice(start) : buf;
-      sinceReport += r.value.byteLength;
-      if (onProgress && sinceReport > 4 * 1024 * 1024) {
-        sinceReport = 0;
-        onProgress(bytes, rows);
-        // מאפשר ל-Worker לנשום ולשלוח הודעות התקדמות
-        await new Promise(function (res) { setTimeout(res, 0); });
-      }
+      buf += dec.decode();
+      if (buf.length) handleLine(buf);
+      if (onProgress) onProgress(bytes, rows);
+    } finally {
+      try { reader.cancel(); } catch (e) { /* כבר נסגר */ }
     }
-    buf += dec.decode();
-    if (buf.length) handleLine(buf);
-    if (onProgress) onProgress(bytes, rows);
     return { bytes: bytes, rows: rows };
   }
 
@@ -240,6 +262,28 @@
   }
 
   /* ==================================================================== */
+  /* עזרי תאריך                                                           */
+  /* ==================================================================== */
+
+  const DAY_COLS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+  const DAY_HE = ['ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי', 'שישי', 'שבת'];
+
+  function dateToNum(s) { return s ? parseInt(s, 10) : 0; }          // '20260901' → 20260901
+  function numToDate(n) { return String(n); }
+  function dateObj(s) {
+    return new Date(+s.slice(0, 4), +s.slice(4, 6) - 1, +s.slice(6, 8));
+  }
+  function objToStr(d) {
+    const p = function (x) { return x < 10 ? '0' + x : '' + x; };
+    return '' + d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate());
+  }
+  /** '20260901' → '01/09/2026' */
+  function fmtDateHe(s) {
+    if (!s || s.length !== 8) return '';
+    return s.slice(6, 8) + '/' + s.slice(4, 6) + '/' + s.slice(0, 4);
+  }
+
+  /* ==================================================================== */
   /* מקור קבצים (ZIP או קבצים בודדים)                                     */
   /* ==================================================================== */
 
@@ -260,8 +304,8 @@
       }
       return {
         kind: 'zip',
+        label: zip.name,
         names: Array.from(map.keys()),
-        totalBytes: entries.reduce(function (a, e) { return a + e.uncompSize; }, 0),
         sizeOf: function (n) { const e = map.get(n); return e ? e.uncompSize : 0; },
         has: function (n) { return map.has(n); },
         open: function (n) {
@@ -275,8 +319,8 @@
     for (const f of files) map.set(baseName(f.name), f);
     return {
       kind: 'files',
+      label: files.length + ' קבצים',
       names: Array.from(map.keys()),
-      totalBytes: files.reduce(function (a, f) { return a + f.size; }, 0),
       sizeOf: function (n) { const f = map.get(n); return f ? f.size : 0; },
       has: function (n) { return map.has(n); },
       open: async function (n) {
@@ -287,21 +331,14 @@
   }
 
   /* ==================================================================== */
-  /* טעינת הפיד                                                           */
+  /* שלב א' — סריקת הפיד (הכול חוץ מ-stop_times)                          */
   /* ==================================================================== */
 
-  const DAY_COLS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
-
   /**
-   * opts:
-   *   mode: 'origins' | 'all'   — רק תחנות מוצא, או כל העצירות
-   *   unit: 'platform' | 'station'
-   *   day:  0..6 (ראשון..שבת) | null
-   *   date: 'YYYYMMDD' | null   — גובר על day, מתחשב ב-calendar_dates
-   *   fromHour, toHour          — שעות יום שירות (אפשר > 24)
-   *   maxRows                   — תקרת שורות נשמרות במצב 'all'
+   * opts: { unit: 'platform' | 'station' }
+   * report(p) לדיווח התקדמות, abort() להחזרת true כדי לבטל.
    */
-  async function loadFeed(source, opts, report) {
+  async function scanFeed(source, opts, report, abort) {
     const warn = [];
     const say = report || function () {};
 
@@ -331,8 +368,7 @@
           const id = r[c.id];
           if (id === undefined || id === '') return;
           const d = parseStopDesc(c.desc >= 0 ? r[c.desc] : '');
-          const idx = stopId.length;
-          stopIndex.set(id, idx);
+          stopIndex.set(id, stopId.length);
           stopId.push(id);
           stopCode.push(c.code >= 0 ? (r[c.code] || '') : '');
           stopName.push(c.name >= 0 ? (r[c.name] || '') : '');
@@ -343,22 +379,24 @@
           stopLon.push(c.lon >= 0 ? parseFloat(r[c.lon]) : NaN);
           stopParentRaw.push(c.parent >= 0 ? (r[c.parent] || '') : '');
           stopLocType.push(c.loc >= 0 ? (parseInt(r[c.loc], 10) || 0) : 0);
-        });
+        },
+        function () { checkAbort(abort); });
     }
     const nStops = stopId.length;
+    checkAbort(abort);
 
     // unitOf: מיפוי רציף → יחידת ניתוח
     const unitOfStop = new Int32Array(nStops);
-    let hasParents = false;
+    let nParented = 0;
     for (let i = 0; i < nStops; i++) {
       let u = i;
       if (opts.unit === 'station' && stopParentRaw[i]) {
         const p = stopIndex.get(stopParentRaw[i]);
-        if (p !== undefined) { u = p; hasParents = true; }
+        if (p !== undefined) { u = p; nParented++; }
       }
       unitOfStop[i] = u;
     }
-    if (opts.unit === 'station' && !hasParents) {
+    if (opts.unit === 'station' && !nParented) {
       warn.push('לא נמצאו ערכי parent_station בפיד — הניתוח בוצע לפי stop_id (רציף בודד).');
     }
 
@@ -393,13 +431,16 @@
           routeLong.push(c.ln >= 0 ? (r[c.ln] || '') : '');
           routeAgency.push(agencyName.get(c.ag >= 0 ? (r[c.ag] || '') : '') || '');
           routeDesc.push(c.de >= 0 ? (r[c.de] || '') : '');
-        });
+        },
+        function () { checkAbort(abort); });
     }
+    checkAbort(abort);
 
     /* ---------- calendar ---------- */
     say({ phase: 'calendar', text: 'קורא calendar.txt…' });
     const serviceIndex = new Map();
     const svcDays = [], svcStart = [], svcEnd = [];
+    let nCalendarRows = 0, nWithDayFlags = 0;
     if (source.has('calendar.txt')) {
       let c = null;
       await streamCsv(await source.open('calendar.txt'),
@@ -410,16 +451,23 @@
         function (r) {
           const id = r[c.id];
           if (id === undefined) return;
+          nCalendarRows++;
           serviceIndex.set(id, svcDays.length);
           const bits = [];
-          for (let k = 0; k < 7; k++) bits.push(c.d[k] >= 0 && r[c.d[k]] === '1' ? 1 : 0);
+          let any = 0;
+          for (let k = 0; k < 7; k++) {
+            const v = c.d[k] >= 0 && r[c.d[k]] === '1' ? 1 : 0;
+            bits.push(v); any |= v;
+          }
+          if (any) nWithDayFlags++;
           svcDays.push(bits);
           svcStart.push(c.s >= 0 ? (r[c.s] || '') : '');
           svcEnd.push(c.e >= 0 ? (r[c.e] || '') : '');
         });
     }
-    // calendar_dates: serviceIdx → Map(date → 1 added / 2 removed)
+    // calendar_dates
     const svcExc = new Map();
+    let nCalendarDateRows = 0, nAddedFromDates = 0;
     if (source.has('calendar_dates.txt')) {
       let c = null;
       await streamCsv(await source.open('calendar_dates.txt'),
@@ -427,27 +475,31 @@
         function (r) {
           const id = r[c.id];
           if (id === undefined) return;
+          nCalendarDateRows++;
           let si = serviceIndex.get(id);
           if (si === undefined) { // שירות שקיים רק ב-calendar_dates
             si = svcDays.length;
             serviceIndex.set(id, si);
             svcDays.push([0, 0, 0, 0, 0, 0, 0]);
             svcStart.push(''); svcEnd.push('');
+            nAddedFromDates++;
           }
           let m = svcExc.get(si);
           if (!m) { m = new Map(); svcExc.set(si, m); }
           m.set(r[c.d], parseInt(r[c.t], 10));
-        });
+        },
+        function () { checkAbort(abort); });
     }
     const nServices = svcDays.length;
-    if (!nServices) warn.push('לא נמצאו נתוני לוח שנה (calendar.txt) — כל הנסיעות ייספרו ללא סינון לפי יום.');
+    checkAbort(abort);
 
     /* ---------- trips ---------- */
     say({ phase: 'trips', text: 'קורא trips.txt…' });
     const tripIndex = new Map();
-    const tripRoute = [], tripService = [], tripHeadsign = [], tripDir = [];
+    const tripIds = [], tripRoute = [], tripService = [], tripHeadsign = [], tripDir = [];
     {
       let c = null;
+      const total = source.sizeOf('trips.txt') || 0;
       await streamCsv(await source.open('trips.txt'),
         function (h) {
           c = {
@@ -460,38 +512,163 @@
           const id = r[c.id];
           if (id === undefined) return;
           tripIndex.set(id, tripRoute.length);
+          tripIds.push(id);
           const ri = c.rt >= 0 ? routeIndex.get(r[c.rt]) : undefined;
           tripRoute.push(ri === undefined ? -1 : ri);
           const si = c.sv >= 0 ? serviceIndex.get(r[c.sv]) : undefined;
           tripService.push(si === undefined ? -1 : si);
           tripHeadsign.push(c.hs >= 0 ? (r[c.hs] || '') : '');
           tripDir.push(c.dr >= 0 ? (parseInt(r[c.dr], 10) || 0) : 0);
+        },
+        function (bytes, rows) {
+          checkAbort(abort);
+          say({ phase: 'trips', bytes: bytes, total: total, rows: rows, text: 'קורא trips.txt…' });
         });
     }
     const nTrips = tripRoute.length;
+    checkAbort(abort);
 
-    /* ---------- מי פעיל ביום הנבחר ---------- */
-    const activeSvc = buildActiveServices(
-      { nServices: nServices, svcDays: svcDays, svcStart: svcStart, svcEnd: svcEnd, svcExc: svcExc },
-      opts);
+    const services = { nServices: nServices, svcDays: svcDays, svcStart: svcStart, svcEnd: svcEnd, svcExc: svcExc };
 
-    /* ---------- stop_times ---------- */
-    say({ phase: 'stop_times', text: 'קורא stop_times.txt (השלב הכבד)…' });
+    // כמה נסיעות לכל שירות — מאפשר לספור נסיעות לכל תאריך במהירות
+    const tripsPerService = new Uint32Array(Math.max(1, nServices));
+    for (let i = 0; i < nTrips; i++) {
+      const s = tripService[i];
+      if (s >= 0) tripsPerService[s]++;
+    }
+
+    say({ phase: 'dates', text: 'מזהה את טווח התאריכים של הפיד…' });
+    const coverage = dateCoverage(services, tripsPerService);
+
+    /* ---------- אבחון ---------- */
+    const diag = {
+      source: source.label,
+      files: source.names.slice().sort(),
+      nStops: nStops, nTrips: nTrips, nRoutes: routeShort.length, nServices: nServices,
+      nParented: nParented,
+      hasCalendar: source.has('calendar.txt'),
+      hasCalendarDates: source.has('calendar_dates.txt'),
+      nCalendarRows: nCalendarRows,
+      nServicesWithDayFlags: nWithDayFlags,
+      nCalendarDateRows: nCalendarDateRows,
+      nServicesOnlyInDates: nAddedFromDates,
+      stopTimesBytes: source.sizeOf('stop_times.txt') || 0,
+      coverage: coverage
+    };
+
+    // אזהרות מנחות
+    if (nServices === 0) {
+      warn.push('הפיד אינו כולל נתוני לוח שנה כלל — כל הנסיעות ייספרו יחד ללא סינון לפי יום.');
+    } else if (nWithDayFlags === 0) {
+      warn.push('בפיד זה אף שירות אינו מסומן בימי השבוע ב-calendar.txt — הוא מוגדר לפי תאריכים ' +
+        'מפורשים ב-calendar_dates.txt. סינון "יום בשבוע" יחזיר אפס תוצאות; יש לבחור תאריך מסוים.');
+    }
+    if (!coverage.dates.length) {
+      warn.push('לא נמצא אף תאריך שבו פועל שירות כלשהו. בדוק שהפיד תקין.');
+    }
+
+    return {
+      warnings: warn,
+      diag: diag,
+      unit: opts.unit,
+      mode: null,           // ייקבע ב-loadStopTimes
+      loadedFilter: null,
+      nStops: nStops, nTrips: nTrips, nRoutes: routeShort.length, nServices: nServices,
+      keptRows: 0,
+      coverage: coverage,
+      stopIndex: stopIndex,
+      stops: {
+        id: stopId, code: stopCode, name: stopName, city: stopCity, street: stopStreet,
+        platform: stopPlatform, lat: stopLat, lon: stopLon, parent: stopParentRaw, locType: stopLocType
+      },
+      unitOfStop: unitOfStop,
+      routes: { short: routeShort, long: routeLong, agency: routeAgency, desc: routeDesc },
+      trips: { id: tripIds, route: tripRoute, service: tripService, headsign: tripHeadsign, dir: tripDir },
+      tripIndex: tripIndex,
+      services: services,
+      tripsPerService: tripsPerService,
+      origins: null,
+      bucket: null
+    };
+  }
+
+  /**
+   * מחשב לכל תאריך בטווח הפיד כמה שירותים ונסיעות פעילים בו.
+   * מוגבל ל-maxDays ימים כדי לא להיתקע על פיד עם טווח שנים.
+   */
+  function dateCoverage(svc, tripsPerService, maxDays) {
+    maxDays = maxDays || 400;
+    let min = 0, max = 0;
+    const upd = function (d) {
+      const n = dateToNum(d);
+      if (!n) return;
+      if (!min || n < min) min = n;
+      if (!max || n > max) max = n;
+    };
+    for (let i = 0; i < svc.nServices; i++) { upd(svc.svcStart[i]); upd(svc.svcEnd[i]); }
+    svc.svcExc.forEach(function (m) { m.forEach(function (v, d) { upd(d); }); });
+
+    if (!min || !max) return { min: null, max: null, dates: [], truncated: false };
+
+    const dates = [];
+    let d = dateObj(numToDate(min));
+    const end = dateObj(numToDate(max));
+    let guard = 0;
+    let truncated = false;
+    while (d <= end) {
+      if (guard++ >= maxDays) { truncated = true; break; }
+      const ds = objToStr(d);
+      const dow = d.getDay();
+      let nSvc = 0, nTrip = 0;
+      for (let i = 0; i < svc.nServices; i++) {
+        const exc = svc.svcExc.get(i);
+        const e = exc ? exc.get(ds) : undefined;
+        let on;
+        if (e === 2) on = false;
+        else if (e === 1) on = true;
+        else {
+          const inRange = (!svc.svcStart[i] || svc.svcStart[i] <= ds) &&
+                          (!svc.svcEnd[i] || ds <= svc.svcEnd[i]);
+          on = inRange && !!svc.svcDays[i][dow];
+        }
+        if (on) { nSvc++; nTrip += tripsPerService ? tripsPerService[i] : 0; }
+      }
+      if (nSvc > 0) dates.push({ date: ds, dow: dow, services: nSvc, trips: nTrip });
+      d = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1);
+    }
+    return { min: numToDate(min), max: numToDate(max), dates: dates, truncated: truncated };
+  }
+
+  /* ==================================================================== */
+  /* שלב ב' — קריאת stop_times                                            */
+  /* ==================================================================== */
+
+  /**
+   * opts: { mode:'origins'|'all', day, date, fromHour, toHour, maxRows }
+   * משנה את feed במקום ומחזיר אותו.
+   */
+  async function loadStopTimes(source, feed, opts, report, abort) {
+    const say = report || function () {};
+    const nTrips = feed.nTrips;
+
+    const activeSvc = buildActiveServices(feed.services, opts);
+
+    say({ phase: 'stop_times', text: 'קורא stop_times.txt…' });
     const stTotal = source.sizeOf('stop_times.txt') || 0;
 
     const tripMinSeq = new Int32Array(nTrips).fill(0x7fffffff);
     const tripOriginStop = new Int32Array(nTrips).fill(-1);
     const tripOriginTime = new Int32Array(nTrips).fill(-1);
 
-    // מצב 'all': שומרים גם עצירות ביניים, מקובצות לפי יחידה כבר בזמן הקריאה
     const keepAll = opts.mode === 'all';
-    const padSec = 40 * 60; // ריפוד לשולי חלון הזמן
+    const padSec = 40 * 60;
     const loSec = opts.fromHour * 3600 - padSec;
-    const hiSec = opts.toHour * 3600 + padSec;
+    const hiSec = opts.toHour * 3600 + 3600 + padSec;
     const maxRows = opts.maxRows || 6000000;
-    const bucket = new Map(); // unitIdx → {t:[], tr:[], sq:[]}
+    const bucket = new Map(); // unitIdx → {t:[], tr:[], sq:[], st:[]}
     let kept = 0, truncated = false;
 
+    const t0 = Date.now();
     let c = null;
     await streamCsv(await source.open('stop_times.txt'),
       function (h) {
@@ -500,11 +677,12 @@
           dep: colIndex(h, ['departure_time']), arr: colIndex(h, ['arrival_time']),
           sq: colIndex(h, ['stop_sequence'])
         };
+        if (c.tr < 0 || c.st < 0) throw new Error('stop_times.txt חסר עמודת trip_id או stop_id.');
       },
       function (r) {
-        const ti = tripIndex.get(r[c.tr]);
+        const ti = feed.tripIndex.get(r[c.tr]);
         if (ti === undefined) return;
-        const si = stopIndex.get(r[c.st]);
+        const si = feed.stopIndex.get(r[c.st]);
         if (si === undefined) return;
         const seq = c.sq >= 0 ? (parseInt(r[c.sq], 10) || 0) : 0;
         let t = c.dep >= 0 ? parseTime(r[c.dep]) : -1;
@@ -518,49 +696,43 @@
         }
 
         if (keepAll && !truncated) {
-          if (activeSvc && tripService[ti] >= 0 && !activeSvc[tripService[ti]]) return;
+          if (activeSvc && feed.trips.service[ti] >= 0 && !activeSvc[feed.trips.service[ti]]) return;
           if (t < loSec || t > hiSec) return;
           if (kept >= maxRows) { truncated = true; return; }
-          const u = unitOfStop[si];
+          const u = feed.unitOfStop[si];
           let b = bucket.get(u);
-          if (!b) { b = { t: [], tr: [], sq: [] }; bucket.set(u, b); }
-          b.t.push(t); b.tr.push(ti); b.sq.push(seq);
+          if (!b) { b = { t: [], tr: [], sq: [], st: [] }; bucket.set(u, b); }
+          b.t.push(t); b.tr.push(ti); b.sq.push(seq); b.st.push(si);
           kept++;
         }
       },
       function (bytes, rows) {
-        say({ phase: 'stop_times', bytes: bytes, total: stTotal, rows: rows,
-          text: 'קורא stop_times.txt — ' + rows.toLocaleString('he-IL') + ' שורות' });
+        checkAbort(abort);
+        const frac = stTotal ? bytes / stTotal : 0;
+        const elapsed = (Date.now() - t0) / 1000;
+        const estRows = frac > 0.005 ? Math.round(rows / frac) : 0;
+        const eta = frac > 0.02 && frac < 1 ? Math.round(elapsed * (1 - frac) / frac) : -1;
+        say({
+          phase: 'stop_times', bytes: bytes, total: stTotal, rows: rows,
+          estRows: estRows, eta: eta, kept: kept,
+          text: 'קורא stop_times.txt'
+        });
       });
 
     if (truncated) {
-      warn.push('הופסקה הקריאה אחרי ' + maxRows.toLocaleString('he-IL') +
+      feed.warnings.push('הופסקה הקריאה אחרי ' + maxRows.toLocaleString('he-IL') +
         ' עצירות (תקרת זיכרון). צמצם את טווח השעות או עבור למצב "תחנות מוצא בלבד".');
     }
 
-    return {
-      warnings: warn,
-      unit: opts.unit,
-      mode: opts.mode,
-      // במצב 'all' הסינון לפי יום/תאריך ולפי טווח השעות מתבצע כבר בקריאה,
-      // ולכן שינוי שלהם מחייב טעינה מחדש. analyzeCompatible() בודק זאת.
-      loadedFilter: keepAll
-        ? { day: (opts.day === undefined ? null : opts.day), date: opts.date || null,
-            fromHour: opts.fromHour, toHour: opts.toHour }
-        : null,
-      nStops: nStops, nTrips: nTrips, nRoutes: routeShort.length, nServices: nServices,
-      keptRows: kept,
-      stops: {
-        id: stopId, code: stopCode, name: stopName, city: stopCity, street: stopStreet,
-        platform: stopPlatform, lat: stopLat, lon: stopLon, parent: stopParentRaw, locType: stopLocType
-      },
-      unitOfStop: unitOfStop,
-      routes: { short: routeShort, long: routeLong, agency: routeAgency, desc: routeDesc },
-      trips: { route: tripRoute, service: tripService, headsign: tripHeadsign, dir: tripDir },
-      services: { nServices: nServices, svcDays: svcDays, svcStart: svcStart, svcEnd: svcEnd, svcExc: svcExc },
-      origins: { stop: tripOriginStop, time: tripOriginTime, seq: tripMinSeq },
-      bucket: bucket
-    };
+    feed.mode = opts.mode;
+    feed.keptRows = kept;
+    feed.origins = { stop: tripOriginStop, time: tripOriginTime, seq: tripMinSeq };
+    feed.bucket = bucket;
+    feed.loadedFilter = keepAll
+      ? { day: (opts.day === undefined ? null : opts.day), date: opts.date || null,
+          fromHour: opts.fromHour, toHour: opts.toHour }
+      : null;
+    return feed;
   }
 
   /** מחזיר Uint8Array של שירותים פעילים, או null אם אין סינון. */
@@ -568,7 +740,7 @@
     if (!svc.nServices) return null;
     if (opts.date) {
       const d = opts.date;
-      const dow = new Date(+d.slice(0, 4), +d.slice(4, 6) - 1, +d.slice(6, 8)).getDay();
+      const dow = dateObj(d).getDay();
       const a = new Uint8Array(svc.nServices);
       for (let i = 0; i < svc.nServices; i++) {
         const exc = svc.svcExc.get(i);
@@ -591,15 +763,29 @@
   /* ==================================================================== */
 
   /**
-   * מחשב עומס לכל יחידת ניתוח.
-   * opts: {day|date, fromHour, toHour, winOrigin, winMid, busLen, defaultLen, minCount, maxResults}
-   * מחזיר {rows: [...], stats: {...}}
+   * משנה את יחידת הניתוח (רציף / תחנת אם) על פיד שכבר נסרק.
+   * מחזיר true אם צריך לקרוא מחדש את stop_times — קורה רק במצב 'all',
+   * שבו העצירות כבר מקובצות לפי יחידה בזמן הקריאה.
    */
-  /**
-   * האם אפשר לנתח את הפיד הטעון עם ההגדרות הללו בלי לקרוא אותו מחדש?
-   * מחזיר null אם כן, או הודעת סיבה אם צריך טעינה מחדש.
-   */
+  function setUnit(feed, unit) {
+    if (feed.unit === unit) return false;
+    const n = feed.stops.id.length;
+    let nParented = 0;
+    for (let i = 0; i < n; i++) {
+      let u = i;
+      if (unit === 'station' && feed.stops.parent[i]) {
+        const p = feed.stopIndex.get(feed.stops.parent[i]);
+        if (p !== undefined) { u = p; nParented++; }
+      }
+      feed.unitOfStop[i] = u;
+    }
+    feed.unit = unit;
+    feed.diag.nParented = nParented;
+    return feed.mode === 'all';
+  }
+
   function analyzeCompatible(feed, opts) {
+    if (!feed || !feed.origins) return 'טרם נקרא stop_times';
     if (feed.mode !== opts.mode) return 'שינוי היקף העצירות (מוצא / כולל ביניים)';
     if (feed.unit !== opts.unit) return 'שינוי יחידת הניתוח (רציף / תחנת אם)';
     const f = feed.loadedFilter;
@@ -618,12 +804,11 @@
     const Wo = (opts.winOrigin || 0) * 60;
     const Wm = (opts.winMid || 0) * 60;
 
-    // בניית יחידות
-    const units = new Map(); // unitIdx → {t:[], tr:[], og:[]}
-    const push = function (u, t, tr, og) {
+    const units = new Map(); // unitIdx → {t:[], tr:[], og:[], st:[]}
+    const push = function (u, t, tr, og, st) {
       let b = units.get(u);
-      if (!b) { b = { t: [], tr: [], og: [] }; units.set(u, b); }
-      b.t.push(t); b.tr.push(tr); b.og.push(og);
+      if (!b) { b = { t: [], tr: [], og: [], st: [] }; units.set(u, b); }
+      b.t.push(t); b.tr.push(tr); b.og.push(og); b.st.push(st);
     };
 
     if (feed.mode === 'all') {
@@ -633,7 +818,7 @@
           if (active && feed.trips.service[ti] >= 0 && !active[feed.trips.service[ti]]) continue;
           const t = b.t[i];
           if (t < lo || t > hi) continue;
-          push(u, t, ti, b.sq[i] === feed.origins.seq[ti] ? 1 : 0);
+          push(u, t, ti, b.sq[i] === feed.origins.seq[ti] ? 1 : 0, b.st[i]);
         }
       });
     } else {
@@ -644,7 +829,7 @@
         if (active && feed.trips.service[ti] >= 0 && !active[feed.trips.service[ti]]) continue;
         const t = ot[ti];
         if (t < lo || t > hi) continue;
-        push(feed.unitOfStop[si], t, ti, 1);
+        push(feed.unitOfStop[si], t, ti, 1, si);
       }
     }
 
@@ -654,25 +839,26 @@
     units.forEach(function (b, u) {
       const n = b.t.length;
       totalDep += n;
-      // מיון לפי זמן
       const idx = new Array(n);
       for (let i = 0; i < n; i++) idx[i] = i;
       idx.sort(function (a, c2) { return b.t[a] - b.t[c2]; });
-      const T = new Int32Array(n), TR = new Int32Array(n), OG = new Uint8Array(n);
-      for (let i = 0; i < n; i++) { T[i] = b.t[idx[i]]; TR[i] = b.tr[idx[i]]; OG[i] = b.og[idx[i]]; }
+      const T = new Int32Array(n), TR = new Int32Array(n), OG = new Uint8Array(n), ST = new Int32Array(n);
+      for (let i = 0; i < n; i++) {
+        const k = idx[i];
+        T[i] = b.t[k]; TR[i] = b.tr[k]; OG[i] = b.og[k]; ST[i] = b.st[k];
+      }
 
       // רמה א' — אותה דקה בדיוק
-      let maxExact = 0, exactAt = -1, exactStart = 0;
+      let maxExact = 0, exactAt = -1;
       let i = 0;
       while (i < n) {
         const min0 = Math.floor(T[i] / 60);
         let j = i;
         while (j < n && Math.floor(T[j] / 60) === min0) j++;
-        if (j - i > maxExact) { maxExact = j - i; exactAt = min0 * 60; exactStart = i; }
+        if (j - i > maxExact) { maxExact = j - i; exactAt = min0 * 60; }
         i = j;
       }
 
-      // רמה ב' — חלון ± סביב כל יציאה
       const winAll = peakWindow(T, null, n, Wm);
       const oIdx = [];
       for (let k = 0; k < n; k++) if (OG[k]) oIdx.push(k);
@@ -680,15 +866,12 @@
       for (let k = 0; k < oIdx.length; k++) OT[k] = T[oIdx[k]];
       const winOrg = peakWindow(OT, null, OT.length, Wo);
 
-      let nOrigin = oIdx.length;
       rows.push({
-        u: u,
-        n: n,
-        nOrigin: nOrigin,
+        u: u, n: n, nOrigin: oIdx.length,
         maxExact: maxExact, exactAt: exactAt,
         winAll: winAll.max, winAllAt: winAll.at,
         winOrg: winOrg.max, winOrgAt: winOrg.at,
-        _T: T, _TR: TR, _OG: OG
+        _T: T, _TR: TR, _OG: OG, _ST: ST
       });
     });
 
@@ -707,7 +890,6 @@
   function peakWindow(T, _unused, n, W) {
     if (!n) return { max: 0, at: -1 };
     if (W <= 0) {
-      // ללא חלון — שקול לספירת אותה שנייה
       let best = 1, at = T[0], i = 0;
       while (i < n) {
         let j = i;
@@ -728,6 +910,30 @@
     return { max: best, at: at };
   }
 
+  /**
+   * משווה סינון "יום בשבוע" מול תאריכים ספציפיים של אותו יום.
+   * מחזיר אזהרה אם צפויה ספירת יתר בגלל ריבוי גרסאות בפיד.
+   */
+  function dayOverlapWarning(feed, day) {
+    const cov = feed.coverage;
+    if (!cov || !cov.dates.length) return null;
+    const svc = feed.services;
+    const byDay = buildActiveServices(svc, { day: day });
+    if (!byDay) return null;
+    let nDay = 0;
+    for (let i = 0; i < byDay.length; i++) nDay += byDay[i];
+    const sameDow = cov.dates.filter(function (d) { return d.dow === day; });
+    if (!sameDow.length) return null;
+    const counts = sameDow.map(function (d) { return d.services; }).sort(function (a, b) { return a - b; });
+    const median = counts[Math.floor(counts.length / 2)];
+    if (median > 0 && nDay > median * 1.25) {
+      return 'סינון לפי יום בשבוע מפעיל ' + nDay.toLocaleString('he-IL') + ' שירותים, לעומת ' +
+        median.toLocaleString('he-IL') + ' בתאריך בודד של אותו יום. הפיד מכיל כמה גרסאות לוח זמנים ' +
+        'שחופפות באותו יום בשבוע, ולכן אותה נסיעה תיספר יותר מפעם אחת. בחר תאריך מסוים לתוצאה מדויקת.';
+    }
+    return null;
+  }
+
   global.GTFSCore = {
     readZipEntries: readZipEntries,
     zipEntryStream: zipEntryStream,
@@ -735,12 +941,21 @@
     splitCsv: splitCsv,
     parseTime: parseTime,
     fmtTime: fmtTime,
+    fmtDateHe: fmtDateHe,
+    dateObj: dateObj,
+    objToStr: objToStr,
     parseStopDesc: parseStopDesc,
     makeSource: makeSource,
-    loadFeed: loadFeed,
+    scanFeed: scanFeed,
+    loadStopTimes: loadStopTimes,
+    dateCoverage: dateCoverage,
     analyze: analyze,
     analyzeCompatible: analyzeCompatible,
+    setUnit: setUnit,
+    dayOverlapWarning: dayOverlapWarning,
     peakWindow: peakWindow,
-    buildActiveServices: buildActiveServices
+    buildActiveServices: buildActiveServices,
+    DAY_HE: DAY_HE,
+    AbortError: AbortError
   };
 })(typeof self !== 'undefined' ? self : globalThis);

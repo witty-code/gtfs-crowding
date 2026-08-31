@@ -1,14 +1,22 @@
 {
   "name": "gtfs-platform-crowding",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "כלי דפדפן לזיהוי תחנות ורציפים עם יותר מדי יציאות אוטובוס בו-זמנית מקובץ GTFS",
   "private": true,
   "type": "module",
   "scripts": {
-    "sample": "node test/make-sample.mjs",
+    "sample": "node test/make-sample.mjs && node test/make-sample.mjs big",
     "test": "node test/run-test.mjs",
-    "test:ui": "node test/make-sample.mjs && node test/ui-test.mjs",
+    "test:ui": "npm run sample && node test/ui-test.mjs",
+    "test:subpath": "node test/subpath-test.mjs",
+    "test:all": "npm run test && npm run test:ui && npm run test:subpath",
+    "vendor": "cp node_modules/leaflet/dist/leaflet.js node_modules/leaflet/dist/leaflet.css vendor/ && cp node_modules/leaflet/dist/images/*.png vendor/images/",
     "serve": "npx --yes http-server -p 8080 -c-1 ."
   },
-  "devDependencies": { "playwright": "^1.40.0" }
+  "comment": "leaflet ו-lucide-static דרושים רק כדי לייצר מחדש את vendor/ — הקבצים עצמם כבר בריפו ואין תלות בזמן ריצה.",
+  "devDependencies": {
+    "playwright": "^1.40.0",
+    "leaflet": "^1.9.4",
+    "lucide-static": "^0.400.0"
+  }
 }

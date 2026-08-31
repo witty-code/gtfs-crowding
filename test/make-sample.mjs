@@ -38,6 +38,10 @@ const rnd = () => {
 };
 const pick = a => a[Math.floor(rnd() * a.length)];
 
+const BIG = process.argv.includes('big');
+const N_TRIPS = BIG ? 45000 : 6000;
+const N_STOPS = BIG ? 3000 : 400;
+
 const cities = ['תל אביב', 'חיפה', 'ירושלים', 'באר שבע', 'נתניה', 'רחובות', 'כפר סבא', 'רעננה'];
 const streets = ['הרצל', 'ויצמן', 'בן גוריון', 'רוטשילד', 'ז׳בוטינסקי', 'אלנבי', 'הנשיא', 'סוקולוב'];
 const agencies = [['1', 'אגד'], ['2', 'דן'], ['3', 'קווים'], ['4', 'מטרופולין'], ['5', 'סופרבוס']];
@@ -64,7 +68,7 @@ for (let k = 0; k < 6; k++) {
   terminals.push(plats);
 }
 // 400 תחנות רגילות
-for (let i = 0; i < 400; i++) {
+for (let i = 0; i < N_STOPS; i++) {
   const id = sid++;
   const city = pick(cities), st = pick(streets);
   stopRows.push([id, 10000 + id, `"${st}/${pick(streets)}"`,
@@ -83,10 +87,11 @@ for (let i = 1; i <= 260; i++) {
   routes.push(rid);
 }
 
+// טווח קצר של שבועיים, כדי שרשימת התאריכים בממשק תהיה קריאה
 const calendar = ['service_id,sunday,monday,tuesday,wednesday,thursday,friday,saturday,start_date,end_date',
-  'WK,1,1,1,1,1,0,0,20260101,20261231',
-  'FRI,0,0,0,0,0,1,0,20260101,20261231',
-  'SAT,0,0,0,0,0,0,1,20260101,20261231'].join('\n');
+  'WK,1,1,1,1,1,0,0,20260831,20260913',
+  'FRI,0,0,0,0,0,1,0,20260831,20260913',
+  'SAT,0,0,0,0,0,0,1,20260831,20260913'].join('\n');
 
 const tripRows = ['trip_id,route_id,service_id,trip_headsign,direction_id'];
 const stRows = ['trip_id,arrival_time,departure_time,stop_id,stop_sequence'];
@@ -106,7 +111,7 @@ function addTrip(route, svc, originStop, startSec, nStops) {
 }
 
 // תנועה רגילה
-for (let i = 0; i < 6000; i++) {
+for (let i = 0; i < N_TRIPS; i++) {
   const start = 5 * 3600 + Math.floor(rnd() * 19 * 3600);
   addTrip(pick(routes), rnd() < .8 ? 'WK' : (rnd() < .5 ? 'FRI' : 'SAT'),
     pick(stops), Math.floor(start / 60) * 60, 8 + Math.floor(rnd() * 20));
@@ -132,11 +137,11 @@ const zip = makeZip({
   'stops.txt': stopRows.join('\n'),
   'routes.txt': routeRows.join('\n'),
   'calendar.txt': calendar,
-  'calendar_dates.txt': 'service_id,date,exception_type\nWK,20260406,2\nSAT,20260406,1',
+  'calendar_dates.txt': 'service_id,date,exception_type\nWK,20260907,2\nSAT,20260907,1',
   'trips.txt': tripRows.join('\n'),
   'stop_times.txt': stRows.join('\n')
 });
-const out = path.join(here, 'sample-gtfs.zip');
+const out = path.join(here, BIG ? 'sample-gtfs-big.zip' : 'sample-gtfs.zip');
 writeFileSync(out, zip);
 console.log('נוצר ' + out + ' — ' + (zip.length / 1024).toFixed(0) + ' KB, ' +
   tn + ' נסיעות, ' + (stRows.length - 1) + ' עצירות, ' + (stopRows.length - 1) + ' תחנות');
