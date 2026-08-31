@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ניתוח עומס רציפים מקובץ GTFS</title>
+<meta name="description" content="כלי דפדפן לזיהוי תחנות ורציפים שבהם מתוכננות יותר מדי יציאות אוטובוס בו-זמנית.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%231d4ed8'/%3E%3Crect x='6' y='7' width='8' height='14' rx='2' fill='%23fff'/%3E%3Crect x='17' y='7' width='8' height='14' rx='2' fill='%23fff' opacity='.55'/%3E%3Ccircle cx='9' cy='24' r='2' fill='%23fff'/%3E%3Ccircle cx='22' cy='24' r='2' fill='%23fff' opacity='.55'/%3E%3C/svg%3E">
+<style>
+:root{
+  --bg:#f6f7f9; --panel:#ffffff; --ink:#141821; --muted:#5c6675; --line:#e3e7ec;
+  --accent:#1d4ed8; --accent-soft:#eef2ff;
+  --a:#b91c1c; --a-bg:#fee2e2; --b:#b45309; --b-bg:#fef3c7; --ok:#15803d; --ok-bg:#dcfce7;
+  --shadow:0 1px 2px rgba(16,24,40,.05), 0 8px 24px -12px rgba(16,24,40,.18);
+  --radius:12px;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#0e1116; --panel:#161b22; --ink:#e6edf3; --muted:#9198a1; --line:#2a313a;
+    --accent:#6ea8fe; --accent-soft:#17233b;
+    --a:#ff8a8a; --a-bg:#3a1414; --b:#f0b23a; --b-bg:#3a2c0f; --ok:#6ee7a8; --ok-bg:#0f2f1d;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.6);
+  }
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  background:var(--bg); color:var(--ink);
+  font:15px/1.6 "Segoe UI", Rubik, Arial, system-ui, sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:1180px;margin:0 auto;padding:24px 18px 80px}
+header h1{font-size:26px;margin:0 0 6px;letter-spacing:-.3px}
+header p{margin:0;color:var(--muted);max-width:70ch}
+.panel{
+  background:var(--panel); border:1px solid var(--line); border-radius:var(--radius);
+  padding:18px; margin-top:18px; box-shadow:var(--shadow);
+}
+.panel > h2{font-size:15px;margin:0 0 14px;text-transform:none;color:var(--muted);font-weight:600;
+  letter-spacing:.02em}
+.step{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;
+  border-radius:50%;background:var(--accent);color:#fff;font-size:12px;font-weight:700;
+  margin-inline-end:8px;vertical-align:-4px}
+
+/* אזור העלאה */
+#drop{
+  border:2px dashed var(--line); border-radius:var(--radius); padding:30px 18px; text-align:center;
+  cursor:pointer; transition:.15s; background:transparent;
+}
+#drop:hover,#drop.over{border-color:var(--accent);background:var(--accent-soft)}
+#drop b{display:block;font-size:16px;margin-bottom:4px}
+#drop span{color:var(--muted);font-size:13.5px}
+#fileInfo{margin-top:12px;font-size:13.5px;color:var(--muted)}
+#fileInfo.ok{color:var(--ok)}
+
+/* הגדרות */
+.grid{display:grid;gap:14px 18px;grid-template-columns:repeat(auto-fit,minmax(200px,1fr))}
+label.f{display:block}
+label.f > span{display:block;font-size:12.5px;color:var(--muted);margin-bottom:5px;font-weight:600}
+select,input[type=number],input[type=date],input[type=text]{
+  width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:8px;
+  background:var(--bg);color:var(--ink);font:inherit;font-size:14px;
+}
+select:focus,input:focus{outline:2px solid var(--accent);outline-offset:-1px;border-color:transparent}
+.hint{font-size:12px;color:var(--muted);margin-top:5px;line-height:1.45}
+button{
+  font:inherit;font-weight:600;border-radius:9px;border:1px solid var(--line);
+  background:var(--panel);color:var(--ink);padding:9px 16px;cursor:pointer;transition:.15s;
+}
+button:hover:not(:disabled){border-color:var(--accent);color:var(--accent)}
+button:disabled{opacity:.45;cursor:not-allowed}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+button.primary:hover:not(:disabled){filter:brightness(1.08);color:#fff}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:16px}
+
+/* התקדמות */
+#progress{display:none;margin-top:16px}
+#progress.on{display:block}
+.bar{height:6px;background:var(--line);border-radius:99px;overflow:hidden}
+.bar > i{display:block;height:100%;width:0;background:var(--accent);transition:width .25s;border-radius:99px}
+#progText{font-size:13px;color:var(--muted);margin-top:8px}
+
+/* התראות */
+.note{border-radius:9px;padding:10px 13px;font-size:13.5px;margin-top:10px;border:1px solid transparent}
+.note.warn{background:var(--b-bg);color:var(--b);border-color:currentColor}
+.note.err{background:var(--a-bg);color:var(--a);border-color:currentColor}
+
+/* כרטיסי סיכום */
+.cards{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-bottom:6px}
+.card{background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:13px 15px}
+.card b{display:block;font-size:25px;line-height:1.25;font-variant-numeric:tabular-nums;letter-spacing:-.5px}
+.card span{font-size:12.5px;color:var(--muted)}
+.card.a b{color:var(--a)} .card.b b{color:var(--b)}
+
+/* טבלה */
+.tools{display:flex;gap:10px;flex-wrap:wrap;align-items:end;margin:16px 0 12px}
+.tools label.f{min-width:130px}
+.tblwrap{overflow:auto;max-height:70vh;border:1px solid var(--line);border-radius:10px}
+table{border-collapse:collapse;width:100%;font-size:13.5px}
+th,td{padding:8px 10px;text-align:right;border-bottom:1px solid var(--line);white-space:nowrap}
+thead th{
+  position:sticky;top:0;background:var(--panel);z-index:2;font-size:12px;color:var(--muted);
+  cursor:pointer;user-select:none;font-weight:600;
+}
+thead th:hover{color:var(--accent)}
+thead th::after{content:"";opacity:.5}
+thead th.sorted::after{content:" ▾"}
+thead th.sorted.asc::after{content:" ▴"}
+tbody tr{cursor:pointer}
+tbody tr:hover{background:var(--accent-soft)}
+td.num{font-variant-numeric:tabular-nums;font-weight:600}
+td.name{white-space:normal;min-width:190px;font-weight:600}
+td small{display:block;font-weight:400;color:var(--muted);font-size:11.5px}
+.tag{display:inline-block;padding:2px 9px;border-radius:99px;font-size:11.5px;font-weight:700}
+.tag.a{background:var(--a-bg);color:var(--a)}
+.tag.b{background:var(--b-bg);color:var(--b)}
+.tag.ok{background:var(--ok-bg);color:var(--ok)}
+.tag.n{background:var(--line);color:var(--muted)}
+input.len{width:72px;padding:4px 6px;font-size:12.5px;text-align:center}
+
+/* מגירת פירוט — הדף כולו RTL, ולכן העמדה פיזית ומפורשת */
+#backdrop{
+  position:fixed;inset:0;background:rgba(10,14,20,.45);z-index:49;
+  opacity:0;pointer-events:none;transition:opacity .25s;
+}
+#backdrop.open{opacity:1;pointer-events:auto}
+#drawer{
+  position:fixed;top:0;bottom:0;right:0;width:min(480px,100%);
+  background:var(--panel);border-left:1px solid var(--line);
+  box-shadow:0 0 40px rgba(0,0,0,.25);
+  transform:translateX(100%);transition:transform .25s;z-index:50;
+  display:flex;flex-direction:column;visibility:hidden;
+}
+#drawer.open{transform:none;visibility:visible}
+#drawer header{padding:16px 18px;border-bottom:1px solid var(--line);display:flex;
+  justify-content:space-between;align-items:flex-start;gap:12px}
+#drawer header h3{margin:0 0 3px;font-size:17px}
+#drawer header p{margin:0;font-size:12.5px;color:var(--muted)}
+#drawer .body{overflow:auto;padding:14px 18px 30px;flex:1}
+#drawer table{font-size:13px}
+.close{border:none;background:transparent;font-size:22px;line-height:1;padding:2px 6px;color:var(--muted)}
+.peak{background:var(--a-bg) !important}
+.peakb{background:var(--b-bg) !important}
+.legend{font-size:12px;color:var(--muted);margin-top:10px;line-height:1.7}
+.legend b{color:var(--ink)}
+footer{margin-top:28px;font-size:12.5px;color:var(--muted);text-align:center;line-height:1.8}
+a{color:var(--accent)}
+.hide{display:none !important}
+@media(max-width:640px){
+  th,td{padding:7px 7px;font-size:12.5px}
+  .wrap{padding:16px 12px 60px}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>ניתוח עומס רציפים מקובץ GTFS</h1>
+  <p>מזהה תחנות ורציפים שבהם מתוכננות יותר מדי יציאות אוטובוס בו-זמנית. כל העיבוד מתבצע בדפדפן שלך —
+     הקובץ אינו נשלח לשום שרת.</p>
+</header>
+
+<!-- ========== שלב 1: קובץ ========== -->
+<section class="panel">
+  <h2><span class="step">1</span>קובץ GTFS</h2>
+  <div id="drop" tabindex="0" role="button">
+    <b>גרור לכאן קובץ GTFS.zip</b>
+    <span>או לחץ לבחירה — אפשר גם להעלות קבצי txt בודדים
+      (stops, trips, stop_times, routes, calendar, calendar_dates, agency)</span>
+  </div>
+  <input type="file" id="file" multiple accept=".zip,.txt" class="hide">
+  <div id="fileInfo"></div>
+</section>
+
+<!-- ========== שלב 2: הגדרות ========== -->
+<section class="panel">
+  <h2><span class="step">2</span>הגדרות ניתוח</h2>
+  <div class="grid">
+    <label class="f"><span>אילו עצירות לנתח</span>
+      <select id="mode">
+        <option value="origins" selected>תחנות מוצא בלבד (מהיר)</option>
+        <option value="all">כולל תחנות ביניים (כבד)</option>
+      </select>
+      <div class="hint">שעות בתחנת מוצא הן מתוכננות ומחייבות; לאורך המסלול הן משוערות.</div>
+    </label>
+
+    <label class="f"><span>יחידת ניתוח</span>
+      <select id="unit">
+        <option value="platform" selected>רציף בודד (stop_id)</option>
+        <option value="station">תחנת אם (parent_station)</option>
+      </select>
+      <div class="hint">אם בפיד אין parent_station, שתי האפשרויות זהות.</div>
+    </label>
+
+    <label class="f"><span>יום</span>
+      <select id="day">
+        <option value="0">ראשון</option><option value="1" selected>שני</option>
+        <option value="2">שלישי</option><option value="3">רביעי</option>
+        <option value="4">חמישי</option><option value="5">שישי</option>
+        <option value="6">שבת</option>
+        <option value="date">— תאריך מסוים —</option>
+      </select>
+      <div class="hint">בתאריך מסוים נלקחים בחשבון גם חריגי calendar_dates.</div>
+    </label>
+
+    <label class="f hide" id="dateWrap"><span>תאריך</span>
+      <input type="date" id="date">
+    </label>
+
+    <label class="f"><span>משעה</span>
+      <select id="fromHour"></select>
+    </label>
+    <label class="f"><span>עד שעה (כולל)</span>
+      <select id="toHour"></select>
+    </label>
+
+    <label class="f"><span>חלון רמה ב׳ — תחנת מוצא (±דק׳)</span>
+      <input type="number" id="winOrigin" value="4" min="0" max="30" step="1">
+    </label>
+    <label class="f"><span>חלון רמה ב׳ — תחנת ביניים (±דק׳)</span>
+      <input type="number" id="winMid" value="2" min="0" max="30" step="1">
+    </label>
+
+    <label class="f"><span>אורך תחנה ברירת מחדל (מ׳)</span>
+      <input type="number" id="defaultLen" value="24" min="6" max="500" step="1">
+      <div class="hint">אפשר לדרוס לכל תחנה בנפרד בטבלה.</div>
+    </label>
+    <label class="f"><span>אורך אוטובוס (מ׳)</span>
+      <input type="number" id="busLen" value="12" min="4" max="30" step="0.5">
+    </label>
+    <label class="f"><span>סף דיווח מינימלי</span>
+      <input type="number" id="minCount" value="2" min="2" max="50" step="1">
+      <div class="hint">אל תציג תחנות שבהן השיא נמוך מערך זה.</div>
+    </label>
+  </div>
+
+  <div class="row">
+    <button id="run" class="primary" disabled>הרץ ניתוח</button>
+    <button id="export" disabled>ייצוא CSV</button>
+    <span id="staleNote" class="hint hide"></span>
+  </div>
+
+  <div id="progress">
+    <div class="bar"><i id="progBar"></i></div>
+    <div id="progText"></div>
+  </div>
+  <div id="msgs"></div>
+</section>
+
+<!-- ========== שלב 3: תוצאות ========== -->
+<section class="panel hide" id="results">
+  <h2><span class="step">3</span>תוצאות</h2>
+  <div class="cards" id="cards"></div>
+
+  <div class="tools">
+    <label class="f" style="flex:1;min-width:200px"><span>חיפוש</span>
+      <input type="text" id="q" placeholder="שם תחנה, עיר או קוד תחנה…"></label>
+    <label class="f"><span>דירוג</span>
+      <select id="gradeFilter">
+        <option value="all">הכול</option>
+        <option value="a">רמה א׳ בלבד</option>
+        <option value="ab" selected>רמה א׳ + ב׳</option>
+      </select></label>
+    <label class="f"><span>סוג תחנה</span>
+      <select id="typeFilter">
+        <option value="all">הכול</option>
+        <option value="origin">עם יציאות מוצא</option>
+        <option value="mid">ביניים בלבד</option>
+      </select></label>
+  </div>
+
+  <div class="tblwrap">
+    <table id="tbl">
+      <thead><tr>
+        <th data-k="grade">דירוג</th>
+        <th data-k="name">תחנה</th>
+        <th data-k="maxExact">רמה א׳<br><small>אותה דקה</small></th>
+        <th data-k="winOrg">מוצא ±<span class="wo">4</span></th>
+        <th data-k="winAll">כללי ±<span class="wm">2</span></th>
+        <th data-k="n">יציאות</th>
+        <th data-k="nOrigin">מהן מוצא</th>
+        <th data-k="len">אורך<br><small>מ׳</small></th>
+        <th data-k="cap">קיבולת</th>
+        <th data-k="need">נדרש<br><small>מ׳</small></th>
+      </tr></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+
+  <div class="legend">
+    <b>רמה א׳</b> — יציאות שמתוכננות לאותה דקה בדיוק מאותו רציף. תכנון בלתי אפשרי.<br>
+    <b>רמה ב׳</b> — יציאות בטווח של ±<span class="wo">4</span> דק׳ בתחנת מוצא, או ±<span class="wm">2</span> דק׳ בתחנת ביניים.<br>
+    <b>קיבולת</b> = אורך התחנה חלקי אורך אוטובוס (מעוגל כלפי מטה). תחנה מסומנת כחריגה רק כשמספר
+    היציאות החופפות עולה על הקיבולת. <b>נדרש</b> = מספר היציאות בשיא × אורך אוטובוס.
+  </div>
+</section>
+
+<footer>
+  כל העיבוד מקומי בדפדפן · אין העלאה לשרת · <span id="ver"></span>
+</footer>
+</div>
+
+<!-- מגירת פירוט -->
+<div id="backdrop"></div>
+<aside id="drawer" aria-hidden="true">
+  <header>
+    <div><h3 id="dTitle">—</h3><p id="dSub"></p></div>
+    <button class="close" id="dClose" title="סגור">×</button>
+  </header>
+  <div class="body" id="dBody"></div>
+</aside>
+
+<script src="app.js"></script>
+</body>
+</html>

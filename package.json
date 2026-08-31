@@ -1,0 +1,14 @@
+{
+  "name": "gtfs-platform-crowding",
+  "version": "1.0.0",
+  "description": "כלי דפדפן לזיהוי תחנות ורציפים עם יותר מדי יציאות אוטובוס בו-זמנית מקובץ GTFS",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "sample": "node test/make-sample.mjs",
+    "test": "node test/run-test.mjs",
+    "test:ui": "node test/make-sample.mjs && node test/ui-test.mjs",
+    "serve": "npx --yes http-server -p 8080 -c-1 ."
+  },
+  "devDependencies": { "playwright": "^1.40.0" }
+}

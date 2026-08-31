@@ -1,0 +1,746 @@
+/*
+ * gtfs-core.js — ליבת פענוח וניתוח GTFS, רצה כולה בדפדפן (ללא שרת).
+ * נטענת גם ב-Web Worker (importScripts) וגם ב-Node לבדיקות.
+ *
+ * מונחים:
+ *   יחידת ניתוח (unit) = רציף בודד (stop_id) או תחנת-אם (parent_station), לפי ההגדרה.
+ *   תחנת מוצא         = היציאה הראשונה של הנסיעה (stop_sequence המינימלי של ה-trip).
+ */
+(function (global) {
+  'use strict';
+
+  /* ==================================================================== */
+  /* ZIP                                                                  */
+  /* ==================================================================== */
+
+  async function readSlice(file, start, end) {
+    return new Uint8Array(await file.slice(start, end).arrayBuffer());
+  }
+  function view(u8) {
+    return new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+  }
+
+  /** קורא את ספריית ה-ZIP המרכזית (תומך גם ZIP64). */
+  async function readZipEntries(file) {
+    const size = file.size;
+    const tailLen = Math.min(size, 66000);
+    const tail = await readSlice(file, size - tailLen, size);
+    const t = view(tail);
+
+    let eocd = -1;
+    for (let i = tail.length - 22; i >= 0; i--) {
+      if (t.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+    }
+    if (eocd < 0) throw new Error('הקובץ אינו ZIP תקין (לא נמצא End Of Central Directory).');
+
+    let cdSize = t.getUint32(eocd + 12, true);
+    let cdOffset = t.getUint32(eocd + 16, true);
+    let nEntries = t.getUint16(eocd + 10, true);
+
+    if (cdOffset === 0xffffffff || cdSize === 0xffffffff || nEntries === 0xffff) {
+      let loc = -1;
+      for (let i = eocd - 20; i >= 0; i--) {
+        if (t.getUint32(i, true) === 0x07064b50) { loc = i; break; }
+      }
+      if (loc < 0) throw new Error('ZIP64 ללא רשומת איתור (locator).');
+      const z64Off = Number(t.getBigUint64(loc + 8, true));
+      const z = view(await readSlice(file, z64Off, z64Off + 56));
+      if (z.getUint32(0, true) !== 0x06064b50) throw new Error('רשומת ZIP64 EOCD פגומה.');
+      nEntries = Number(z.getBigUint64(32, true));
+      cdSize = Number(z.getBigUint64(40, true));
+      cdOffset = Number(z.getBigUint64(48, true));
+    }
+
+    const cd = await readSlice(file, cdOffset, cdOffset + cdSize);
+    const c = view(cd);
+    const dec = new TextDecoder('utf-8');
+    const entries = [];
+    let p = 0;
+
+    for (let i = 0; i < nEntries && p + 46 <= cd.length; i++) {
+      if (c.getUint32(p, true) !== 0x02014b50) break;
+      const method = c.getUint16(p + 10, true);
+      let compSize = c.getUint32(p + 20, true);
+      let uncompSize = c.getUint32(p + 24, true);
+      const nameLen = c.getUint16(p + 28, true);
+      const extraLen = c.getUint16(p + 30, true);
+      const cmtLen = c.getUint16(p + 32, true);
+      let lho = c.getUint32(p + 42, true);
+      const name = dec.decode(cd.subarray(p + 46, p + 46 + nameLen));
+
+      if (uncompSize === 0xffffffff || compSize === 0xffffffff || lho === 0xffffffff) {
+        let e = p + 46 + nameLen;
+        const endE = e + extraLen;
+        while (e + 4 <= endE) {
+          const id = c.getUint16(e, true);
+          const sz = c.getUint16(e + 2, true);
+          if (id === 0x0001) {
+            let q = e + 4;
+            if (uncompSize === 0xffffffff) { uncompSize = Number(c.getBigUint64(q, true)); q += 8; }
+            if (compSize === 0xffffffff) { compSize = Number(c.getBigUint64(q, true)); q += 8; }
+            if (lho === 0xffffffff) { lho = Number(c.getBigUint64(q, true)); q += 8; }
+            break;
+          }
+          e += 4 + sz;
+        }
+      }
+      entries.push({ name: name, method: method, compSize: compSize, uncompSize: uncompSize, lho: lho });
+      p += 46 + nameLen + extraLen + cmtLen;
+    }
+    return entries;
+  }
+
+  /** מחזיר ReadableStream של תוכן רשומה ב-ZIP, מפוענח בזרימה. */
+  async function zipEntryStream(file, entry) {
+    const head = view(await readSlice(file, entry.lho, entry.lho + 30));
+    if (head.getUint32(0, true) !== 0x04034b50) {
+      throw new Error('כותרת מקומית פגומה עבור ' + entry.name);
+    }
+    const nameLen = head.getUint16(26, true);
+    const extraLen = head.getUint16(28, true);
+    const start = entry.lho + 30 + nameLen + extraLen;
+    const blob = file.slice(start, start + entry.compSize);
+    let s = blob.stream();
+    if (entry.method === 8) {
+      if (typeof DecompressionStream === 'undefined') {
+        throw new Error('הדפדפן אינו תומך ב-DecompressionStream. נסה Chrome/Edge 103+, Firefox 113+ או Safari 16.4+.');
+      }
+      s = s.pipeThrough(new DecompressionStream('deflate-raw'));
+    } else if (entry.method !== 0) {
+      throw new Error('שיטת דחיסה לא נתמכת (' + entry.method + ') בקובץ ' + entry.name);
+    }
+    return s;
+  }
+
+  /* ==================================================================== */
+  /* CSV                                                                  */
+  /* ==================================================================== */
+
+  function splitCsv(line) {
+    if (line.indexOf('"') === -1) return line.split(',');
+    const out = [];
+    let cur = '';
+    let q = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (q) {
+        if (ch === '"') {
+          if (line[i + 1] === '"') { cur += '"'; i++; } else { q = false; }
+        } else cur += ch;
+      } else if (ch === '"') q = true;
+      else if (ch === ',') { out.push(cur); cur = ''; }
+      else cur += ch;
+    }
+    out.push(cur);
+    return out;
+  }
+
+  /**
+   * קורא CSV בזרימה. onHeader מקבל מערך שמות עמודות, onRow מקבל מערך ערכים.
+   * onProgress(bytesRead, rowsRead) נקרא אחת לכמה מקטעים.
+   */
+  async function streamCsv(stream, onHeader, onRow, onProgress) {
+    const reader = stream.getReader();
+    const dec = new TextDecoder('utf-8');
+    let buf = '';
+    let header = null;
+    let bytes = 0;
+    let rows = 0;
+    let sinceReport = 0;
+
+    const handleLine = function (line) {
+      if (line.charCodeAt(line.length - 1) === 13) line = line.slice(0, -1);
+      if (line.length === 0) return;
+      if (header === null) {
+        if (line.charCodeAt(0) === 0xfeff) line = line.slice(1);
+        header = splitCsv(line).map(function (s) { return s.trim(); });
+        onHeader(header);
+      } else {
+        onRow(splitCsv(line));
+        rows++;
+      }
+    };
+
+    for (;;) {
+      const r = await reader.read();
+      if (r.done) break;
+      bytes += r.value.byteLength;
+      buf += dec.decode(r.value, { stream: true });
+      let start = 0;
+      let nl;
+      while ((nl = buf.indexOf('\n', start)) !== -1) {
+        handleLine(buf.slice(start, nl));
+        start = nl + 1;
+      }
+      buf = start > 0 ? buf.slice(start) : buf;
+      sinceReport += r.value.byteLength;
+      if (onProgress && sinceReport > 4 * 1024 * 1024) {
+        sinceReport = 0;
+        onProgress(bytes, rows);
+        // מאפשר ל-Worker לנשום ולשלוח הודעות התקדמות
+        await new Promise(function (res) { setTimeout(res, 0); });
+      }
+    }
+    buf += dec.decode();
+    if (buf.length) handleLine(buf);
+    if (onProgress) onProgress(bytes, rows);
+    return { bytes: bytes, rows: rows };
+  }
+
+  function colIndex(header, names) {
+    for (let i = 0; i < names.length; i++) {
+      const k = header.indexOf(names[i]);
+      if (k !== -1) return k;
+    }
+    return -1;
+  }
+
+  /** "25:10:00" → 90600 שניות מתחילת יום השירות. */
+  function parseTime(s) {
+    if (!s) return -1;
+    let h = 0, m = 0, sec = 0, i = 0, c;
+    const n = s.length;
+    while (i < n && (c = s.charCodeAt(i)) >= 48 && c <= 57) { h = h * 10 + (c - 48); i++; }
+    if (s.charCodeAt(i) !== 58) return -1;
+    i++;
+    while (i < n && (c = s.charCodeAt(i)) >= 48 && c <= 57) { m = m * 10 + (c - 48); i++; }
+    if (s.charCodeAt(i) === 58) {
+      i++;
+      while (i < n && (c = s.charCodeAt(i)) >= 48 && c <= 57) { sec = sec * 10 + (c - 48); i++; }
+    }
+    return h * 3600 + m * 60 + sec;
+  }
+
+  function fmtTime(sec) {
+    const h = Math.floor(sec / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    const s = sec % 60;
+    const p = function (x) { return x < 10 ? '0' + x : '' + x; };
+    return p(h) + ':' + p(m) + (s ? ':' + p(s) : '');
+  }
+
+  /** מפרק stop_desc בסגנון משרד התחבורה: "רחוב: X עיר: Y רציף: Z קומה: W" */
+  const DESC_LABELS = [['רחוב:', 'street'], ['עיר:', 'city'], ['רציף:', 'platform'], ['קומה:', 'floor']];
+  function parseStopDesc(d) {
+    const res = { street: '', city: '', platform: '', floor: '' };
+    if (!d) return res;
+    const found = [];
+    for (let i = 0; i < DESC_LABELS.length; i++) {
+      const k = d.indexOf(DESC_LABELS[i][0]);
+      if (k >= 0) found.push({ i: k, len: DESC_LABELS[i][0].length, key: DESC_LABELS[i][1] });
+    }
+    if (!found.length) return res;
+    found.sort(function (a, b) { return a.i - b.i; });
+    for (let j = 0; j < found.length; j++) {
+      const s = found[j].i + found[j].len;
+      const e = j + 1 < found.length ? found[j + 1].i : d.length;
+      res[found[j].key] = d.slice(s, e).trim();
+    }
+    return res;
+  }
+
+  /* ==================================================================== */
+  /* מקור קבצים (ZIP או קבצים בודדים)                                     */
+  /* ==================================================================== */
+
+  function baseName(p) {
+    const i = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'));
+    return (i === -1 ? p : p.slice(i + 1)).toLowerCase();
+  }
+
+  async function makeSource(fileList) {
+    const files = Array.from(fileList);
+    const zip = files.find(function (f) { return /\.zip$/i.test(f.name); });
+    if (zip) {
+      const entries = await readZipEntries(zip);
+      const map = new Map();
+      for (const e of entries) {
+        if (e.name.endsWith('/')) continue;
+        map.set(baseName(e.name), e);
+      }
+      return {
+        kind: 'zip',
+        names: Array.from(map.keys()),
+        totalBytes: entries.reduce(function (a, e) { return a + e.uncompSize; }, 0),
+        sizeOf: function (n) { const e = map.get(n); return e ? e.uncompSize : 0; },
+        has: function (n) { return map.has(n); },
+        open: function (n) {
+          const e = map.get(n);
+          if (!e) return null;
+          return zipEntryStream(zip, e);
+        }
+      };
+    }
+    const map = new Map();
+    for (const f of files) map.set(baseName(f.name), f);
+    return {
+      kind: 'files',
+      names: Array.from(map.keys()),
+      totalBytes: files.reduce(function (a, f) { return a + f.size; }, 0),
+      sizeOf: function (n) { const f = map.get(n); return f ? f.size : 0; },
+      has: function (n) { return map.has(n); },
+      open: async function (n) {
+        const f = map.get(n);
+        return f ? f.stream() : null;
+      }
+    };
+  }
+
+  /* ==================================================================== */
+  /* טעינת הפיד                                                           */
+  /* ==================================================================== */
+
+  const DAY_COLS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+
+  /**
+   * opts:
+   *   mode: 'origins' | 'all'   — רק תחנות מוצא, או כל העצירות
+   *   unit: 'platform' | 'station'
+   *   day:  0..6 (ראשון..שבת) | null
+   *   date: 'YYYYMMDD' | null   — גובר על day, מתחשב ב-calendar_dates
+   *   fromHour, toHour          — שעות יום שירות (אפשר > 24)
+   *   maxRows                   — תקרת שורות נשמרות במצב 'all'
+   */
+  async function loadFeed(source, opts, report) {
+    const warn = [];
+    const say = report || function () {};
+
+    const need = ['stops.txt', 'trips.txt', 'stop_times.txt'];
+    for (const n of need) {
+      if (!source.has(n)) throw new Error('חסר הקובץ ' + n + ' בפיד.');
+    }
+
+    /* ---------- stops ---------- */
+    say({ phase: 'stops', text: 'קורא stops.txt…' });
+    const stopIndex = new Map();
+    const stopId = [], stopCode = [], stopName = [], stopCity = [], stopStreet = [],
+      stopPlatform = [], stopLat = [], stopLon = [], stopParentRaw = [], stopLocType = [];
+    {
+      let c = null;
+      await streamCsv(await source.open('stops.txt'),
+        function (h) {
+          c = {
+            id: colIndex(h, ['stop_id']), code: colIndex(h, ['stop_code']),
+            name: colIndex(h, ['stop_name']), desc: colIndex(h, ['stop_desc']),
+            lat: colIndex(h, ['stop_lat']), lon: colIndex(h, ['stop_lon']),
+            parent: colIndex(h, ['parent_station']), loc: colIndex(h, ['location_type']),
+            plat: colIndex(h, ['platform_code'])
+          };
+        },
+        function (r) {
+          const id = r[c.id];
+          if (id === undefined || id === '') return;
+          const d = parseStopDesc(c.desc >= 0 ? r[c.desc] : '');
+          const idx = stopId.length;
+          stopIndex.set(id, idx);
+          stopId.push(id);
+          stopCode.push(c.code >= 0 ? (r[c.code] || '') : '');
+          stopName.push(c.name >= 0 ? (r[c.name] || '') : '');
+          stopCity.push(d.city);
+          stopStreet.push(d.street);
+          stopPlatform.push((c.plat >= 0 && r[c.plat]) ? r[c.plat] : d.platform);
+          stopLat.push(c.lat >= 0 ? parseFloat(r[c.lat]) : NaN);
+          stopLon.push(c.lon >= 0 ? parseFloat(r[c.lon]) : NaN);
+          stopParentRaw.push(c.parent >= 0 ? (r[c.parent] || '') : '');
+          stopLocType.push(c.loc >= 0 ? (parseInt(r[c.loc], 10) || 0) : 0);
+        });
+    }
+    const nStops = stopId.length;
+
+    // unitOf: מיפוי רציף → יחידת ניתוח
+    const unitOfStop = new Int32Array(nStops);
+    let hasParents = false;
+    for (let i = 0; i < nStops; i++) {
+      let u = i;
+      if (opts.unit === 'station' && stopParentRaw[i]) {
+        const p = stopIndex.get(stopParentRaw[i]);
+        if (p !== undefined) { u = p; hasParents = true; }
+      }
+      unitOfStop[i] = u;
+    }
+    if (opts.unit === 'station' && !hasParents) {
+      warn.push('לא נמצאו ערכי parent_station בפיד — הניתוח בוצע לפי stop_id (רציף בודד).');
+    }
+
+    /* ---------- agency ---------- */
+    const agencyName = new Map();
+    if (source.has('agency.txt')) {
+      let c = null;
+      await streamCsv(await source.open('agency.txt'),
+        function (h) { c = { id: colIndex(h, ['agency_id']), name: colIndex(h, ['agency_name']) }; },
+        function (r) { agencyName.set(c.id >= 0 ? (r[c.id] || '') : '', c.name >= 0 ? (r[c.name] || '') : ''); });
+    }
+
+    /* ---------- routes ---------- */
+    say({ phase: 'routes', text: 'קורא routes.txt…' });
+    const routeIndex = new Map();
+    const routeShort = [], routeLong = [], routeAgency = [], routeDesc = [];
+    if (source.has('routes.txt')) {
+      let c = null;
+      await streamCsv(await source.open('routes.txt'),
+        function (h) {
+          c = {
+            id: colIndex(h, ['route_id']), sh: colIndex(h, ['route_short_name']),
+            ln: colIndex(h, ['route_long_name']), ag: colIndex(h, ['agency_id']),
+            de: colIndex(h, ['route_desc'])
+          };
+        },
+        function (r) {
+          const id = r[c.id];
+          if (id === undefined) return;
+          routeIndex.set(id, routeShort.length);
+          routeShort.push(c.sh >= 0 ? (r[c.sh] || '') : '');
+          routeLong.push(c.ln >= 0 ? (r[c.ln] || '') : '');
+          routeAgency.push(agencyName.get(c.ag >= 0 ? (r[c.ag] || '') : '') || '');
+          routeDesc.push(c.de >= 0 ? (r[c.de] || '') : '');
+        });
+    }
+
+    /* ---------- calendar ---------- */
+    say({ phase: 'calendar', text: 'קורא calendar.txt…' });
+    const serviceIndex = new Map();
+    const svcDays = [], svcStart = [], svcEnd = [];
+    if (source.has('calendar.txt')) {
+      let c = null;
+      await streamCsv(await source.open('calendar.txt'),
+        function (h) {
+          c = { id: colIndex(h, ['service_id']), d: DAY_COLS.map(function (n) { return colIndex(h, [n]); }),
+            s: colIndex(h, ['start_date']), e: colIndex(h, ['end_date']) };
+        },
+        function (r) {
+          const id = r[c.id];
+          if (id === undefined) return;
+          serviceIndex.set(id, svcDays.length);
+          const bits = [];
+          for (let k = 0; k < 7; k++) bits.push(c.d[k] >= 0 && r[c.d[k]] === '1' ? 1 : 0);
+          svcDays.push(bits);
+          svcStart.push(c.s >= 0 ? (r[c.s] || '') : '');
+          svcEnd.push(c.e >= 0 ? (r[c.e] || '') : '');
+        });
+    }
+    // calendar_dates: serviceIdx → Map(date → 1 added / 2 removed)
+    const svcExc = new Map();
+    if (source.has('calendar_dates.txt')) {
+      let c = null;
+      await streamCsv(await source.open('calendar_dates.txt'),
+        function (h) { c = { id: colIndex(h, ['service_id']), d: colIndex(h, ['date']), t: colIndex(h, ['exception_type']) }; },
+        function (r) {
+          const id = r[c.id];
+          if (id === undefined) return;
+          let si = serviceIndex.get(id);
+          if (si === undefined) { // שירות שקיים רק ב-calendar_dates
+            si = svcDays.length;
+            serviceIndex.set(id, si);
+            svcDays.push([0, 0, 0, 0, 0, 0, 0]);
+            svcStart.push(''); svcEnd.push('');
+          }
+          let m = svcExc.get(si);
+          if (!m) { m = new Map(); svcExc.set(si, m); }
+          m.set(r[c.d], parseInt(r[c.t], 10));
+        });
+    }
+    const nServices = svcDays.length;
+    if (!nServices) warn.push('לא נמצאו נתוני לוח שנה (calendar.txt) — כל הנסיעות ייספרו ללא סינון לפי יום.');
+
+    /* ---------- trips ---------- */
+    say({ phase: 'trips', text: 'קורא trips.txt…' });
+    const tripIndex = new Map();
+    const tripRoute = [], tripService = [], tripHeadsign = [], tripDir = [];
+    {
+      let c = null;
+      await streamCsv(await source.open('trips.txt'),
+        function (h) {
+          c = {
+            id: colIndex(h, ['trip_id']), rt: colIndex(h, ['route_id']),
+            sv: colIndex(h, ['service_id']), hs: colIndex(h, ['trip_headsign']),
+            dr: colIndex(h, ['direction_id'])
+          };
+        },
+        function (r) {
+          const id = r[c.id];
+          if (id === undefined) return;
+          tripIndex.set(id, tripRoute.length);
+          const ri = c.rt >= 0 ? routeIndex.get(r[c.rt]) : undefined;
+          tripRoute.push(ri === undefined ? -1 : ri);
+          const si = c.sv >= 0 ? serviceIndex.get(r[c.sv]) : undefined;
+          tripService.push(si === undefined ? -1 : si);
+          tripHeadsign.push(c.hs >= 0 ? (r[c.hs] || '') : '');
+          tripDir.push(c.dr >= 0 ? (parseInt(r[c.dr], 10) || 0) : 0);
+        });
+    }
+    const nTrips = tripRoute.length;
+
+    /* ---------- מי פעיל ביום הנבחר ---------- */
+    const activeSvc = buildActiveServices(
+      { nServices: nServices, svcDays: svcDays, svcStart: svcStart, svcEnd: svcEnd, svcExc: svcExc },
+      opts);
+
+    /* ---------- stop_times ---------- */
+    say({ phase: 'stop_times', text: 'קורא stop_times.txt (השלב הכבד)…' });
+    const stTotal = source.sizeOf('stop_times.txt') || 0;
+
+    const tripMinSeq = new Int32Array(nTrips).fill(0x7fffffff);
+    const tripOriginStop = new Int32Array(nTrips).fill(-1);
+    const tripOriginTime = new Int32Array(nTrips).fill(-1);
+
+    // מצב 'all': שומרים גם עצירות ביניים, מקובצות לפי יחידה כבר בזמן הקריאה
+    const keepAll = opts.mode === 'all';
+    const padSec = 40 * 60; // ריפוד לשולי חלון הזמן
+    const loSec = opts.fromHour * 3600 - padSec;
+    const hiSec = opts.toHour * 3600 + padSec;
+    const maxRows = opts.maxRows || 6000000;
+    const bucket = new Map(); // unitIdx → {t:[], tr:[], sq:[]}
+    let kept = 0, truncated = false;
+
+    let c = null;
+    await streamCsv(await source.open('stop_times.txt'),
+      function (h) {
+        c = {
+          tr: colIndex(h, ['trip_id']), st: colIndex(h, ['stop_id']),
+          dep: colIndex(h, ['departure_time']), arr: colIndex(h, ['arrival_time']),
+          sq: colIndex(h, ['stop_sequence'])
+        };
+      },
+      function (r) {
+        const ti = tripIndex.get(r[c.tr]);
+        if (ti === undefined) return;
+        const si = stopIndex.get(r[c.st]);
+        if (si === undefined) return;
+        const seq = c.sq >= 0 ? (parseInt(r[c.sq], 10) || 0) : 0;
+        let t = c.dep >= 0 ? parseTime(r[c.dep]) : -1;
+        if (t < 0 && c.arr >= 0) t = parseTime(r[c.arr]);
+        if (t < 0) return;
+
+        if (seq < tripMinSeq[ti]) {
+          tripMinSeq[ti] = seq;
+          tripOriginStop[ti] = si;
+          tripOriginTime[ti] = t;
+        }
+
+        if (keepAll && !truncated) {
+          if (activeSvc && tripService[ti] >= 0 && !activeSvc[tripService[ti]]) return;
+          if (t < loSec || t > hiSec) return;
+          if (kept >= maxRows) { truncated = true; return; }
+          const u = unitOfStop[si];
+          let b = bucket.get(u);
+          if (!b) { b = { t: [], tr: [], sq: [] }; bucket.set(u, b); }
+          b.t.push(t); b.tr.push(ti); b.sq.push(seq);
+          kept++;
+        }
+      },
+      function (bytes, rows) {
+        say({ phase: 'stop_times', bytes: bytes, total: stTotal, rows: rows,
+          text: 'קורא stop_times.txt — ' + rows.toLocaleString('he-IL') + ' שורות' });
+      });
+
+    if (truncated) {
+      warn.push('הופסקה הקריאה אחרי ' + maxRows.toLocaleString('he-IL') +
+        ' עצירות (תקרת זיכרון). צמצם את טווח השעות או עבור למצב "תחנות מוצא בלבד".');
+    }
+
+    return {
+      warnings: warn,
+      unit: opts.unit,
+      mode: opts.mode,
+      // במצב 'all' הסינון לפי יום/תאריך ולפי טווח השעות מתבצע כבר בקריאה,
+      // ולכן שינוי שלהם מחייב טעינה מחדש. analyzeCompatible() בודק זאת.
+      loadedFilter: keepAll
+        ? { day: (opts.day === undefined ? null : opts.day), date: opts.date || null,
+            fromHour: opts.fromHour, toHour: opts.toHour }
+        : null,
+      nStops: nStops, nTrips: nTrips, nRoutes: routeShort.length, nServices: nServices,
+      keptRows: kept,
+      stops: {
+        id: stopId, code: stopCode, name: stopName, city: stopCity, street: stopStreet,
+        platform: stopPlatform, lat: stopLat, lon: stopLon, parent: stopParentRaw, locType: stopLocType
+      },
+      unitOfStop: unitOfStop,
+      routes: { short: routeShort, long: routeLong, agency: routeAgency, desc: routeDesc },
+      trips: { route: tripRoute, service: tripService, headsign: tripHeadsign, dir: tripDir },
+      services: { nServices: nServices, svcDays: svcDays, svcStart: svcStart, svcEnd: svcEnd, svcExc: svcExc },
+      origins: { stop: tripOriginStop, time: tripOriginTime, seq: tripMinSeq },
+      bucket: bucket
+    };
+  }
+
+  /** מחזיר Uint8Array של שירותים פעילים, או null אם אין סינון. */
+  function buildActiveServices(svc, opts) {
+    if (!svc.nServices) return null;
+    if (opts.date) {
+      const d = opts.date;
+      const dow = new Date(+d.slice(0, 4), +d.slice(4, 6) - 1, +d.slice(6, 8)).getDay();
+      const a = new Uint8Array(svc.nServices);
+      for (let i = 0; i < svc.nServices; i++) {
+        const exc = svc.svcExc.get(i);
+        const e = exc ? exc.get(d) : undefined;
+        if (e === 2) { a[i] = 0; continue; }
+        if (e === 1) { a[i] = 1; continue; }
+        const inRange = (!svc.svcStart[i] || svc.svcStart[i] <= d) && (!svc.svcEnd[i] || d <= svc.svcEnd[i]);
+        a[i] = inRange && svc.svcDays[i][dow] ? 1 : 0;
+      }
+      return a;
+    }
+    if (opts.day === null || opts.day === undefined) return null;
+    const a = new Uint8Array(svc.nServices);
+    for (let i = 0; i < svc.nServices; i++) a[i] = svc.svcDays[i][opts.day] ? 1 : 0;
+    return a;
+  }
+
+  /* ==================================================================== */
+  /* ניתוח                                                                */
+  /* ==================================================================== */
+
+  /**
+   * מחשב עומס לכל יחידת ניתוח.
+   * opts: {day|date, fromHour, toHour, winOrigin, winMid, busLen, defaultLen, minCount, maxResults}
+   * מחזיר {rows: [...], stats: {...}}
+   */
+  /**
+   * האם אפשר לנתח את הפיד הטעון עם ההגדרות הללו בלי לקרוא אותו מחדש?
+   * מחזיר null אם כן, או הודעת סיבה אם צריך טעינה מחדש.
+   */
+  function analyzeCompatible(feed, opts) {
+    if (feed.mode !== opts.mode) return 'שינוי היקף העצירות (מוצא / כולל ביניים)';
+    if (feed.unit !== opts.unit) return 'שינוי יחידת הניתוח (רציף / תחנת אם)';
+    const f = feed.loadedFilter;
+    if (!f) return null; // מצב 'origins' — הכול נשמר, כל סינון מיידי
+    const day = opts.day === undefined ? null : opts.day;
+    if ((f.date || null) !== (opts.date || null)) return 'שינוי התאריך';
+    if (!opts.date && f.day !== day) return 'שינוי היום בשבוע';
+    if (opts.fromHour < f.fromHour || opts.toHour > f.toHour) return 'הרחבת טווח השעות';
+    return null;
+  }
+
+  function analyze(feed, opts) {
+    const active = buildActiveServices(feed.services, opts);
+    const lo = opts.fromHour * 3600;
+    const hi = opts.toHour * 3600 + 3599;
+    const Wo = (opts.winOrigin || 0) * 60;
+    const Wm = (opts.winMid || 0) * 60;
+
+    // בניית יחידות
+    const units = new Map(); // unitIdx → {t:[], tr:[], og:[]}
+    const push = function (u, t, tr, og) {
+      let b = units.get(u);
+      if (!b) { b = { t: [], tr: [], og: [] }; units.set(u, b); }
+      b.t.push(t); b.tr.push(tr); b.og.push(og);
+    };
+
+    if (feed.mode === 'all') {
+      feed.bucket.forEach(function (b, u) {
+        for (let i = 0; i < b.t.length; i++) {
+          const ti = b.tr[i];
+          if (active && feed.trips.service[ti] >= 0 && !active[feed.trips.service[ti]]) continue;
+          const t = b.t[i];
+          if (t < lo || t > hi) continue;
+          push(u, t, ti, b.sq[i] === feed.origins.seq[ti] ? 1 : 0);
+        }
+      });
+    } else {
+      const os = feed.origins.stop, ot = feed.origins.time;
+      for (let ti = 0; ti < os.length; ti++) {
+        const si = os[ti];
+        if (si < 0) continue;
+        if (active && feed.trips.service[ti] >= 0 && !active[feed.trips.service[ti]]) continue;
+        const t = ot[ti];
+        if (t < lo || t > hi) continue;
+        push(feed.unitOfStop[si], t, ti, 1);
+      }
+    }
+
+    const rows = [];
+    let totalDep = 0;
+
+    units.forEach(function (b, u) {
+      const n = b.t.length;
+      totalDep += n;
+      // מיון לפי זמן
+      const idx = new Array(n);
+      for (let i = 0; i < n; i++) idx[i] = i;
+      idx.sort(function (a, c2) { return b.t[a] - b.t[c2]; });
+      const T = new Int32Array(n), TR = new Int32Array(n), OG = new Uint8Array(n);
+      for (let i = 0; i < n; i++) { T[i] = b.t[idx[i]]; TR[i] = b.tr[idx[i]]; OG[i] = b.og[idx[i]]; }
+
+      // רמה א' — אותה דקה בדיוק
+      let maxExact = 0, exactAt = -1, exactStart = 0;
+      let i = 0;
+      while (i < n) {
+        const min0 = Math.floor(T[i] / 60);
+        let j = i;
+        while (j < n && Math.floor(T[j] / 60) === min0) j++;
+        if (j - i > maxExact) { maxExact = j - i; exactAt = min0 * 60; exactStart = i; }
+        i = j;
+      }
+
+      // רמה ב' — חלון ± סביב כל יציאה
+      const winAll = peakWindow(T, null, n, Wm);
+      const oIdx = [];
+      for (let k = 0; k < n; k++) if (OG[k]) oIdx.push(k);
+      const OT = new Int32Array(oIdx.length);
+      for (let k = 0; k < oIdx.length; k++) OT[k] = T[oIdx[k]];
+      const winOrg = peakWindow(OT, null, OT.length, Wo);
+
+      let nOrigin = oIdx.length;
+      rows.push({
+        u: u,
+        n: n,
+        nOrigin: nOrigin,
+        maxExact: maxExact, exactAt: exactAt,
+        winAll: winAll.max, winAllAt: winAll.at,
+        winOrg: winOrg.max, winOrgAt: winOrg.at,
+        _T: T, _TR: TR, _OG: OG
+      });
+    });
+
+    const minC = opts.minCount || 2;
+    const keep = rows.filter(function (r) {
+      return r.maxExact >= minC || r.winOrg >= minC || r.winAll >= minC;
+    });
+    keep.sort(function (a, b) {
+      return (b.maxExact - a.maxExact) || (b.winOrg - a.winOrg) || (b.winAll - a.winAll) || (b.n - a.n);
+    });
+
+    return { rows: keep, allRows: rows, stats: { units: units.size, departures: totalDep, flagged: keep.length } };
+  }
+
+  /** מקסימום מספר יציאות בטווח [t-W, t+W] סביב יציאה כלשהי. T ממוין. */
+  function peakWindow(T, _unused, n, W) {
+    if (!n) return { max: 0, at: -1 };
+    if (W <= 0) {
+      // ללא חלון — שקול לספירת אותה שנייה
+      let best = 1, at = T[0], i = 0;
+      while (i < n) {
+        let j = i;
+        while (j < n && T[j] === T[i]) j++;
+        if (j - i > best) { best = j - i; at = T[i]; }
+        i = j;
+      }
+      return { max: best, at: at };
+    }
+    let lo = 0, hi = 0, best = 0, at = -1;
+    for (let i = 0; i < n; i++) {
+      while (T[lo] < T[i] - W) lo++;
+      if (hi < i) hi = i;
+      while (hi + 1 < n && T[hi + 1] <= T[i] + W) hi++;
+      const cnt = hi - lo + 1;
+      if (cnt > best) { best = cnt; at = T[i]; }
+    }
+    return { max: best, at: at };
+  }
+
+  global.GTFSCore = {
+    readZipEntries: readZipEntries,
+    zipEntryStream: zipEntryStream,
+    streamCsv: streamCsv,
+    splitCsv: splitCsv,
+    parseTime: parseTime,
+    fmtTime: fmtTime,
+    parseStopDesc: parseStopDesc,
+    makeSource: makeSource,
+    loadFeed: loadFeed,
+    analyze: analyze,
+    analyzeCompatible: analyzeCompatible,
+    peakWindow: peakWindow,
+    buildActiveServices: buildActiveServices
+  };
+})(typeof self !== 'undefined' ? self : globalThis);
