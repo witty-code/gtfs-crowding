@@ -321,7 +321,7 @@
       renderPaths(m);
 
     } else if (m.type === 'routes') {
-      ROUTES = m.rows;
+      ROUTES = m.rows; RSEL.clear();
       finish();
       renderRoutes();
 
@@ -362,6 +362,8 @@
       ['נסיעות', num(d.nTrips)],
       ['שירותים (service_id)', num(d.nServices)],
       ['גודל stop_times', fmtBytes(d.stopTimesBytes)],
+      ['גודל shapes', d.shapesBytes ? fmtBytes(d.shapesBytes) : '— אין בפיד'],
+      ['צורות מסלול נפרדות', num(d.nDistinctShapes)],
       ['רשומות מסוג station', num(d.nStationRecords)],
       ['רציפים עם parent_station', num(d.nWithParent)],
       ['שורות calendar', num(d.nCalendarRows) + (d.nServicesWithDayFlags ? '' : ' (ללא דגלי ימים)')],
@@ -472,12 +474,12 @@
           '<small>' + esc(r.city || '') + (r.street ? ' · ' + esc(r.street) : '') +
           ' · קוד ' + esc(r.code || r.stopId) + '</small></td>' +
         '<td class="num">' + big(r.maxExact, g === 'a') +
-          (r.exactAt >= 0 && r.maxExact > 1 ? '<small>' + fmt(r.exactAt) + '</small>' : '') + '</td>' +
+          (r.exactAt >= 0 && r.maxExact > 1 ? '<small>' + fmtB(r.exactAt) + '</small>' : '') + '</td>' +
         '<td class="num">' + (r.nOrigin ? r.winOrg +
-          (r.winOrgAt >= 0 && r.winOrg > 1 ? '<small>' + fmt(r.winOrgAt) + '</small>' : '')
+          (r.winOrgAt >= 0 && r.winOrg > 1 ? '<small>' + fmtB(r.winOrgAt) + '</small>' : '')
           : '<span style="color:var(--muted)">—</span>') + '</td>' +
         '<td class="num">' + r.winAll +
-          (r.winAllAt >= 0 && r.winAll > 1 ? '<small>' + fmt(r.winAllAt) + '</small>' : '') + '</td>' +
+          (r.winAllAt >= 0 && r.winAll > 1 ? '<small>' + fmtB(r.winAllAt) + '</small>' : '') + '</td>' +
         '<td class="num">' + r.n + '</td>' +
         '<td class="num">' + r.nOrigin + '</td>' +
         '<td><input class="len" type="number" min="6" step="1" value="' + lenOf(r) +
@@ -504,12 +506,15 @@
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
   function fmt(sec) { return pad(Math.floor(sec / 3600)) + ':' + pad(Math.floor((sec % 3600) / 60)); }
+  /* אותה שעה, אבל מבודדת לכיווניות — כדי שהנקודתיים והמקף לא יתהפכו בעברית */
+  function fmtB(sec) { return '<bdi class="tnum">' + fmt(sec) + '</bdi>'; }
   function fmtSec(sec) {
     var s = sec % 60;
     return pad(Math.floor(sec / 3600)) + ':' + pad(Math.floor((sec % 3600) / 60)) + (s ? ':' + pad(s) : '');
   }
 
-  document.querySelectorAll('thead th').forEach(function (th) {
+  /* מיון רק בטבלת התוצאות הראשית — לא בטבלת הקווים שאין לה data-k */
+  document.querySelectorAll('thead th[data-k]').forEach(function (th) {
     th.addEventListener('click', function () {
       var k = th.dataset.k;
       if (sortKey === k) sortAsc = !sortAsc; else { sortKey = k; sortAsc = false; }
@@ -684,7 +689,7 @@
     if (c.next2) seq.push(ctxSlot(c.next2, false));
     return '<div class="ctxbox">' +
       '<b>הקו לאורך היום:</b> ' + (c.total === 1 ? 'יציאה אחת' : c.total + ' יציאות') + ' מהמוצא, ' +
-      fmt(c.first) + '–' + fmt(c.last) + '<br>' +
+      '<bdi class="tnum">' + fmt(c.first) + '–' + fmt(c.last) + '</bdi>' + '<br>' +
       '<b>סביב היציאה הזו במוצא:</b> ' + seq.join(' · ') +
       (gapBefore !== null || gapAfter !== null
         ? '<br><b>מרווחים:</b> ' +
@@ -725,7 +730,7 @@
   }
 
   function ctxSlot(g, isNow) {
-    return '<span class="' + (isNow ? 'now' : '') + '">' + fmt(g.t) +
+    return '<span class="' + (isNow ? 'now' : '') + '">' + fmtB(g.t) +
       (g.count > 1 ? '×' + g.count : '') + '</span>';
   }
 
@@ -778,7 +783,7 @@
       var nOrg = g.rows.filter(function (r) { return r.origin; }).length;
       html.push('<div class="mingrp ' + lv + '"><div class="hd">' +
         '<svg class="ic"><use href="#i-clock"></use></svg>' +
-        '<span class="t">' + fmt(g.min * 60) + '</span>' +
+        '<span class="t">' + fmtB(g.min * 60) + '</span>' +
         '<span>' + (n === 1 ? 'יציאה אחת' : n + ' יציאות') +
           (nOrg && nOrg !== n ? ' · ' + nOrg + ' מוצא' : '') + '</span>' +
         '<button class="sm showpaths" data-min="' + g.min + '" style="margin-inline-start:auto">' +
@@ -1100,36 +1105,77 @@
 
   $('tabRoutes').addEventListener('click', function () { showTab('routes'); });
 
+  var RSEL = new Set();   // קווים שסומנו ידנית בתוצאות החיפוש
+
   $('rq').addEventListener('input', renderRoutes);
   $('rFilter').addEventListener('change', renderRoutes);
-  /* הייצוא חייב להיות בדיוק מה שמוצג בטבלה — כולל תיבת החיפוש */
+
+  /* סימון/ניקוי של כל התוצאות המוצגות כרגע */
+  $('rAll').addEventListener('change', function () {
+    var vis = visibleRoutes();
+    if (this.checked) vis.forEach(function (r) { RSEL.add(r.ri); });
+    else vis.forEach(function (r) { RSEL.delete(r.ri); });
+    renderRoutes();
+  });
+
+  /* הייצוא הוא בדיוק מה שמסומן; אם אין סימון — כל מה שמוצג בטבלה */
   $('exportRoutes').addEventListener('click', function () {
     if (!worker) return;
-    var shown = visibleRoutes();
+    var shown = exportRoutesList();
     if (!shown.length) { showMsg('warn', 'אין קווים לייצוא בסינון הנוכחי.'); return; }
     busy = true;
     setProgress(-1, 'בונה קובץ לוחות זמנים (' + shown.length + ' קווים)…');
     worker.postMessage({ type: 'exportRoutes', onlyDup: false, maxCols: 80,
-      only: shown.map(function (r) { return r.ri; }) });
+      label: $('rq').value, only: shown.map(function (r) { return r.ri; }) });
   });
 
+  /* הקווים שיצאו לקובץ: המסומנים מתוך המוצגים, ואם אין — כל המוצגים */
+  function exportRoutesList() {
+    var vis = visibleRoutes();
+    var picked = vis.filter(function (r) { return RSEL.has(r.ri); });
+    return picked.length ? picked : vis;
+  }
+
+  /* חיפוש חופשי בכל השדות, אך התאמה מדויקת של מספר הקו עולה לראש הרשימה */
   function visibleRoutes() {
     var q = $('rq').value.trim();
     var onlyDup = $('rFilter').value === 'dup';
-    return ROUTES.filter(function (r) {
+    var out = ROUTES.filter(function (r) {
       if (onlyDup && !r.dup) return false;
       if (q && (r.line + ' ' + r.long + ' ' + r.agency + ' ' + r.makat).indexOf(q) === -1) return false;
       return true;
     });
+    if (q) {
+      var rank = function (r) {
+        if (String(r.line) === q) return 0;              // מספר הקו בדיוק
+        if (String(r.makat).indexOf(q) === 0) return 1;  // תחילת המק״ט
+        if (String(r.line).indexOf(q) === 0) return 2;
+        return 3;
+      };
+      out = out.map(function (r, i) { return { r: r, i: i, k: rank(r) }; })
+        .sort(function (a, b) { return a.k - b.k || a.i - b.i; })
+        .map(function (x) { return x.r; });
+    }
+    return out;
   }
 
   function renderRoutes() {
     var all = visibleRoutes();
     var rows = all.slice(0, 800);
+    var nPicked = all.filter(function (r) { return RSEL.has(r.ri); }).length;
+    var nExp = exportRoutesList().length;
+    $('rAll').checked = all.length > 0 && nPicked === all.length;
+    $('rAll').indeterminate = nPicked > 0 && nPicked < all.length;
     $('exportRoutes').innerHTML = '<svg class="ic"><use href="#i-download"></use></svg> ייצוא ל-Canva (' +
-      all.length + ')';
+      nExp + ')';
+    $('exportRoutes').title = nPicked
+      ? nPicked + ' קווים מסומנים מתוך ' + all.length + ' תוצאות'
+      : 'לא סומן דבר — ייוצאו כל ' + all.length + ' התוצאות המוצגות';
     $('rBody').innerHTML = rows.map(function (r) {
-      return '<tr data-ri="' + r.ri + '">' +
+      var on = RSEL.has(r.ri);
+      return '<tr data-ri="' + r.ri + '"' + (on ? ' class="picked"' : '') + '>' +
+        '<td class="chk"><input type="checkbox" data-pick="' + r.ri + '"' +
+          (on ? ' checked' : '') + ' aria-label="בחר את קו ' + esc(r.line) + '"></td>' +
         '<td class="num"><b>' + esc(r.line) + '</b></td>' +
         '<td>' + esc(r.agency) + '</td>' +
         '<td class="name" style="font-weight:400">' + esc(r.long) +
@@ -1138,11 +1184,24 @@
         '<td class="num">' + r.slots + '</td>' +
         '<td class="num">' + (r.dup ? '<span style="color:var(--a)">' + r.dup + '</span>' : '0') + '</td>' +
         '</tr>';
-    }).join('') || '<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:26px">' +
+    }).join('') || '<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:26px">' +
       'אין קווים תואמים.</td></tr>';
+    if (all.length > rows.length) {
+      $('rBody').insertAdjacentHTML('beforeend',
+        '<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:10px">' +
+        'מוצגות ' + rows.length + ' תוצאות ראשונות מתוך ' + all.length +
+        ' — צמצם את החיפוש כדי לסמן את השאר.</td></tr>');
+    }
   }
 
   $('rBody').addEventListener('click', function (e) {
+    var box = e.target.closest('input[data-pick]');
+    if (box) {                       // סימון לייצוא — לא פותח לוח זמנים
+      var ri = parseInt(box.dataset.pick, 10);
+      if (box.checked) RSEL.add(ri); else RSEL.delete(ri);
+      renderRoutes();
+      return;
+    }
     var tr = e.target.closest('tr');
     if (!tr || !tr.dataset.ri || !worker) return;
     worker.postMessage({ type: 'timetable', ri: parseInt(tr.dataset.ri, 10) });
@@ -1160,12 +1219,15 @@
     Array.from(byHour.keys()).sort(function (a, b) { return a - b; }).forEach(function (h) {
       var gs = byHour.get(h);
       var tot = gs.reduce(function (a, g) { return a + g.count; }, 0);
-      out.push('<div class="ttrow"><span class="tth">' + pad(h % 24) + ':00' +
+      out.push('<div class="ttrow"><span class="tth"><bdi class="tnum">' +
+        pad(h % 24) + ':00</bdi>' +
         (h >= 24 ? '<sup>+1</sup>' : '') + '</span>' +
         '<span class="ttn">' + tot + '</span>' +
         '<span class="ttmins">' + gs.map(function (g) {
-          return '<span class="slot' + (g.count > 1 ? ' dup' : '') + '">:' +
-            pad(Math.floor((g.t % 3600) / 60)) + (g.count > 1 ? ' ×' + g.count : '') + '</span>';
+          // שעה מלאה בכל שבב: הנקודתיים בתוך bdi כדי שלא יתהפכו בעברית
+          return '<span class="slot' + (g.count > 1 ? ' dup' : '') + '"><bdi class="tnum">' +
+            pad(h % 24) + ':' + pad(Math.floor((g.t % 3600) / 60)) + '</bdi>' +
+            (g.count > 1 ? ' ×' + g.count : '') + '</span>';
         }).join('') + '</span></div>');
     });
     return '<div class="tthours">' + out.join('') + '</div>';
@@ -1213,5 +1275,5 @@
     setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
   }
 
-  $('ver').textContent = 'גרסה 2.1';
+  $('ver').textContent = 'גרסה 2.2';
 })();

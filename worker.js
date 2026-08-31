@@ -81,6 +81,52 @@ function lineNumber(ri) {
   return FEED.routes.id ? FEED.routes.id[ri] : '';
 }
 
+/* תעתיק עברי→לטיני לשמות קבצים. דפדפנים מבוססי Chromium מתעלמים
+   לחלוטין מערך download שאינו ASCII ומורידים קובץ בשם "download",
+   ולכן שם הקובץ חייב להיות אנגלי גם כשהחיפוש היה בעברית. */
+const HE2LAT = {
+  'א': 'a', 'ב': 'b', 'ג': 'g', 'ד': 'd', 'ה': 'h', 'ו': 'v', 'ז': 'z', 'ח': 'h',
+  'ט': 't', 'י': 'y', 'כ': 'k', 'ך': 'k', 'ל': 'l', 'מ': 'm', 'ם': 'm', 'נ': 'n',
+  'ן': 'n', 'ס': 's', 'ע': 'a', 'פ': 'p', 'ף': 'p', 'צ': 'ts', 'ץ': 'ts',
+  'ק': 'k', 'ר': 'r', 'ש': 'sh', 'ת': 't'
+};
+
+/**
+ * ניקוי מחרוזת שמקורה בקלט משתמש לשימוש בשם קובץ.
+ * אחרי התעתיק משאירים אך ורק ספרות, אותיות לטיניות, מקף וקו תחתון —
+ * כך שאין תווי נתיב (/ \ ..), אין נקודות שיוצרות סיומת שנייה,
+ * אין תווי בקרה ואין תווי כיווניות דו-כיווניים שמסתירים סיומת.
+ */
+function safeSlug(s, max) {
+  s = String(s === undefined || s === null ? '' : s);
+  s = s.replace(/[\u0000-\u001f\u007f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, '');
+  s = s.replace(/[֐-׿]/g, function (c) { return HE2LAT[c] || ''; });
+  s = s.replace(/[^0-9A-Za-z_]+/g, '-');
+  s = s.replace(/-{2,}/g, '-').replace(/^-+|-+$/g, '');
+  return s.slice(0, max || 40).replace(/-+$/, '');
+}
+
+/** שם קובץ הייצוא: תיאור הבחירה (מק״ט/קו/מפעיל) + היום שנבחר. */
+function exportName(prefix, label, only) {
+  const parts = [prefix];
+  if (only && only.length && only.length <= 4) {
+    const lines = [], makats = [];
+    for (const ri of only) {
+      const ln = safeSlug(lineNumber(ri), 12);
+      if (ln && lines.indexOf(ln) === -1) lines.push(ln);
+      const mk = safeSlug(FEED.routes.desc[ri], 16);
+      if (mk && makats.indexOf(mk) === -1) makats.push(mk);
+    }
+    if (lines.length) parts.push('line-' + lines.join('-'));
+    if (only.length <= 2 && makats.length) parts.push(makats.join('-'));
+  } else {
+    const lb = safeSlug(label, 40);
+    if (lb) parts.push(lb);
+  }
+  parts.push(safeSlug(LAST.opts.date || 'day' + LAST.opts.day, 12));
+  return parts.join('-').slice(0, 120) + '.csv';
+}
+
 function routeInfo(ri) {
   return {
     ri: ri,
@@ -218,7 +264,7 @@ self.onmessage = async function (e) {
       if (!LAST) throw new Error('אין תוצאות.');
       send({ type: 'progress', text: 'בונה קובץ לוחות זמנים…', indeterminate: true });
       send({ type: 'export', csv: buildRoutesCsv(msg.onlyDup, msg.maxCols, msg.only),
-        name: 'gtfs-timetables-' + (LAST.opts.date || 'day' + LAST.opts.day) + '.csv' });
+        name: exportName('gtfs-timetables', msg.label, msg.only) });
 
     } else if (msg.type === 'exportStop') {
       if (!LAST) throw new Error('אין תוצאות.');
@@ -254,7 +300,8 @@ self.onmessage = async function (e) {
           FEED.trips.id[ti], perMin[Math.floor(r._T[i] / 60)]].map(q).join(','));
       }
       send({ type: 'export', csv: '﻿' + lines.join('\r\n'),
-        name: 'stop-' + (m.code || m.stopId) + '-' + (LAST.opts.date || 'day') + '.csv' });
+        name: 'stop-' + safeSlug(m.code || m.stopId, 16) + '-' +
+          safeSlug(m.name, 24) + '-' + safeSlug(LAST.opts.date || 'day', 12) + '.csv' });
 
     } else if (msg.type === 'paths') {
       if (!LAST) throw new Error('אין תוצאות.');
@@ -401,8 +448,10 @@ function buildRoutesCsv(onlyDup, maxCols, only) {
     return GTFSCore.fmtTime(g.t) + (g.count > 1 ? '*' + g.count : '');
   };
 
-  // כמה עמודות שעה באמת צריך
-  let need = 0;
+  // כמה עמודות שעה באמת צריך — לכל כיוון בנפרד.
+  // בפיד הישראלי כל כיוון נסיעה הוא route_id נפרד, ולכן ברוב הייצואים
+  // אין כיוון שני כלל; במקרה כזה לא מייצרים עמודות Dir2 ריקות.
+  let need1 = 0, need2 = 0;
   const rows = [];
   tt.forEach(function (dirs, ri) {
     const ds = Array.from(dirs.keys()).sort();
@@ -411,16 +460,22 @@ function buildRoutesCsv(onlyDup, maxCols, only) {
     if (allow && !allow.has(ri)) return;
     const dup = d1.concat(d2).some(function (g) { return g.count > 1; });
     if (onlyDup && !dup) return;
-    need = Math.max(need, d1.length, d2.length);
+    need1 = Math.max(need1, d1.length);
+    need2 = Math.max(need2, d2.length);
     rows.push({ ri: ri, ds: ds, d1: d1, d2: d2, dup: dup });
   });
-  need = Math.min(need, maxCols);
+  need1 = Math.min(need1, maxCols);
+  need2 = Math.min(need2, maxCols);
+  const hasD2 = need2 > 0;
 
-  const head = ['Line_Number', 'Destination', 'Direction_1_Name', 'Direction_2_Name',
-    'Agency', 'Makat', 'Service_Date', 'Dir1_Count', 'Dir2_Count',
-    'Dir1_Times', 'Dir2_Times'];
-  for (let i = 1; i <= need; i++) head.push('Dir1_Time_' + i);
-  for (let i = 1; i <= need; i++) head.push('Dir2_Time_' + i);
+  const head = ['Line_Number', 'Destination', 'Direction_1_Name'];
+  if (hasD2) head.push('Direction_2_Name');
+  head.push('Agency', 'Makat', 'Service_Date', 'Dir1_Count');
+  if (hasD2) head.push('Dir2_Count');
+  head.push('Dir1_Times');
+  if (hasD2) head.push('Dir2_Times');
+  for (let i = 1; i <= need1; i++) head.push('Dir1_Time_' + i);
+  for (let i = 1; i <= need2; i++) head.push('Dir2_Time_' + i);
 
   const when = LAST.opts.date ? GTFSCore.fmtDateHe(LAST.opts.date)
     : 'יום ' + GTFSCore.DAY_HE[LAST.opts.day];
@@ -437,17 +492,19 @@ function buildRoutesCsv(onlyDup, maxCols, only) {
     const line = [
       lineNumber(r.ri),
       FEED.routes.long[r.ri],
-      dirHeadsign(r.ri, r.ds[0]),
-      r.ds.length > 1 ? dirHeadsign(r.ri, r.ds[1]) : '',
+      dirHeadsign(r.ri, r.ds[0])
+    ];
+    if (hasD2) line.push(r.ds.length > 1 ? dirHeadsign(r.ri, r.ds[1]) : '');
+    line.push(
       FEED.routes.agency[r.ri],
       FEED.routes.desc[r.ri],
       when,
-      r.d1.reduce(function (a, g) { return a + g.count; }, 0),
-      r.d2.reduce(function (a, g) { return a + g.count; }, 0),
-      t1.join(' '), t2.join(' ')
-    ];
-    for (let i = 0; i < need; i++) line.push(t1[i] || '');
-    for (let i = 0; i < need; i++) line.push(t2[i] || '');
+      r.d1.reduce(function (a, g) { return a + g.count; }, 0));
+    if (hasD2) line.push(r.d2.reduce(function (a, g) { return a + g.count; }, 0));
+    line.push(t1.join(' '));
+    if (hasD2) line.push(t2.join(' '));
+    for (let i = 0; i < need1; i++) line.push(t1[i] || '');
+    for (let i = 0; i < need2; i++) line.push(t2[i] || '');
     out.push(line.map(q).join(','));
   }
   return '﻿' + out.join('\r\n');

@@ -466,7 +466,7 @@
     /* ---------- routes ---------- */
     say({ phase: 'routes', text: 'קורא routes.txt…' });
     const routeIndex = new Map();
-    const routeShort = [], routeLong = [], routeAgency = [], routeDesc = [];
+    const routeShort = [], routeLong = [], routeAgency = [], routeDesc = [], routeId = [];
     if (source.has('routes.txt')) {
       let c = null;
       await streamCsv(await source.open('routes.txt'),
@@ -481,6 +481,7 @@
           const id = r[c.id];
           if (id === undefined) return;
           routeIndex.set(id, routeShort.length);
+          routeId.push(id);
           routeShort.push(c.sh >= 0 ? (r[c.sh] || '') : '');
           routeLong.push(c.ln >= 0 ? (r[c.ln] || '') : '');
           routeAgency.push(agencyName.get(c.ag >= 0 ? (r[c.ag] || '') : '') || '');
@@ -550,6 +551,8 @@
     /* ---------- trips ---------- */
     say({ phase: 'trips', text: 'קורא trips.txt…' });
     const tripIndex = new Map();
+    let nTripsWithShape = 0;
+    const shapeIds = new Set();
     const tripIds = [], tripRoute = [], tripService = [], tripHeadsign = [], tripDir = [];
     {
       let c = null;
@@ -559,7 +562,7 @@
           c = {
             id: colIndex(h, ['trip_id']), rt: colIndex(h, ['route_id']),
             sv: colIndex(h, ['service_id']), hs: colIndex(h, ['trip_headsign']),
-            dr: colIndex(h, ['direction_id'])
+            dr: colIndex(h, ['direction_id']), sp: colIndex(h, ['shape_id'])
           };
         },
         function (r) {
@@ -573,6 +576,7 @@
           tripService.push(si === undefined ? -1 : si);
           tripHeadsign.push(c.hs >= 0 ? (r[c.hs] || '') : '');
           tripDir.push(c.dr >= 0 ? (parseInt(r[c.dr], 10) || 0) : 0);
+          if (c.sp >= 0 && r[c.sp]) { nTripsWithShape++; shapeIds.add(r[c.sp]); }
         },
         function (bytes, rows) {
           checkAbort(abort);
@@ -609,6 +613,9 @@
       nCalendarDateRows: nCalendarDateRows,
       nServicesOnlyInDates: nAddedFromDates,
       stopTimesBytes: source.sizeOf('stop_times.txt') || 0,
+      shapesBytes: source.sizeOf('shapes.txt') || 0,
+      nTripsWithShape: nTripsWithShape,
+      nDistinctShapes: shapeIds.size,
       nStopsRepaired: nStopsRepaired,
       nStopsBadCoord: nStopsBadCoord,
       malformedSamples: badSamples,
@@ -649,7 +656,7 @@
         platform: stopPlatform, lat: stopLat, lon: stopLon, parent: stopParentRaw, locType: stopLocType
       },
       unitOfStop: unitOfStop,
-      routes: { short: routeShort, long: routeLong, agency: routeAgency, desc: routeDesc },
+      routes: { id: routeId, short: routeShort, long: routeLong, agency: routeAgency, desc: routeDesc },
       trips: { id: tripIds, route: tripRoute, service: tripService, headsign: tripHeadsign, dir: tripDir },
       tripIndex: tripIndex,
       services: services,

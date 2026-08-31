@@ -247,6 +247,12 @@ input.len{width:72px;padding:4px 6px;font-size:12.5px;text-align:center}
 .tth{font-weight:700;font-variant-numeric:tabular-nums;min-width:4.4em}
 .ttn{color:var(--muted);font-size:12px;min-width:2.2em;text-align:center}
 .ttmins{display:flex;flex-wrap:wrap;gap:5px;flex:1}
+/* זמנים תמיד משמאל־לימין ומבודדים, אחרת הנקודתיים "קופצות" בעברית */
+.tnum{unicode-bidi:isolate;font-variant-numeric:tabular-nums}
+th.chk,td.chk{width:2.4em;text-align:center;padding-inline:6px}
+th.chk input,td.chk input{cursor:pointer;width:16px;height:16px;accent-color:var(--accent)}
+#rBody tr.picked{background:var(--accent-soft)}
+.selnote{font-size:12px;color:var(--muted);align-self:center}
 .slot{font-variant-numeric:tabular-nums;border:1px solid var(--line);border-radius:6px;
   padding:3px 8px;font-size:12.5px;background:var(--bg)}
 .slot.dup{background:var(--a-bg);color:var(--a);border-color:currentColor;font-weight:700}
@@ -460,6 +466,7 @@ a{color:var(--accent)}
     </div>
     <div class="tblwrap" style="max-height:52vh">
       <table><thead><tr>
+        <th class="chk"><input type="checkbox" id="rAll" title="סמן/נקה את כל התוצאות המוצגות"></th>
         <th>קו</th><th>מפעיל</th><th>מסלול</th>
         <th>יציאות</th><th>שעות</th><th>שעות כפולות</th>
       </tr></thead><tbody id="rBody"></tbody></table>
