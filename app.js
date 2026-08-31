@@ -284,8 +284,10 @@
         }
         if (p.total) extra += '<span class="s-bytes"><span class="num">' +
           fmtPair(p.bytes, p.total) + '</span></span>';
+        // הכיתוב מעורב עברית ומספרים; כפיית direction:ltr הפכה את הסדר
+        // ל-"שנ׳ 45", ולכן כאן משאירים זרימה טבעית ורק קובעים רוחב.
         if (p.eta > 0) extra += '<span class="s-eta"><svg class="ic"><use href="#i-clock"></use></svg>' +
-          ' נותרו כ-<span class="num">' + fmtDur(p.eta) + '</span></span>';
+          ' נותרו כ-' + fmtDur(p.eta) + '</span>';
         if (p.kept) extra += '<span class="s-kept"><span class="num">' + num(p.kept) +
           '</span> נשמרו</span>';
         setProgress(pct, p.text || '', extra);
@@ -314,6 +316,9 @@
 
     } else if (m.type === 'detail') {
       renderDetail(m);
+
+    } else if (m.type === 'paths') {
+      renderPaths(m);
 
     } else if (m.type === 'routes') {
       ROUTES = m.rows;
@@ -357,7 +362,8 @@
       ['נסיעות', num(d.nTrips)],
       ['שירותים (service_id)', num(d.nServices)],
       ['גודל stop_times', fmtBytes(d.stopTimesBytes)],
-      ['רציפים עם תחנת אם', num(d.nParented)],
+      ['רשומות מסוג station', num(d.nStationRecords)],
+      ['רציפים עם parent_station', num(d.nWithParent)],
       ['שורות calendar', num(d.nCalendarRows) + (d.nServicesWithDayFlags ? '' : ' (ללא דגלי ימים)')],
       ['שורות calendar_dates', num(d.nCalendarDateRows)],
       ['טווח תאריכים', cov.min ? fmtDateHe(cov.min) + ' – ' + fmtDateHe(cov.max) : '—'],
@@ -391,6 +397,15 @@
     }
     if (cov.truncated) {
       showMsg('info', 'טווח התאריכים של הפיד ארוך מ-400 ימים; הרשימה נקטעה.');
+    }
+    // למה "רציפים עם תחנת אם" יוצא 0 — שאלה שעולה כמעט תמיד על הפיד הישראלי
+    if (!d.nWithParent) {
+      showMsg('info', 'אף תחנה בפיד אינה מצביעה על תחנת אם (parent_station ריק בכל השורות)' +
+        (d.nStationRecords ? ', למרות שיש בו ' + num(d.nStationRecords) +
+          ' רשומות המוגדרות כתחנה (location_type=1). הפיד מגדיר תחנות אך אינו מקשר אליהן רציפים'
+          : '') +
+        '. לכן "תחנת אם" ו"רציף בודד" יתנהגו זהה, וכל רציף נספר בנפרד — ' +
+        'וזה גם הפירוש הנכון לצורך בדיקת עומס על רציף.');
     }
   }
 
@@ -616,7 +631,7 @@
     $('backdrop').classList.remove('open');
     d.inert = true;
     d.removeAttribute('aria-hidden');
-    closeMeasure();
+    if (typeof stopMeasuring === 'function') stopMeasuring();
   }
   function openDrawer() {
     var d = $('drawer');
@@ -631,6 +646,7 @@
 
   function renderDetail(m) {
     detailRows = m.rows; detailMeta = m.meta;
+    detailMeta.u = m.u;
     var meta = m.meta;
     $('dTitle').textContent = meta.name + (meta.platform ? ' — רציף ' + meta.platform : '');
     $('dSub').innerHTML = esc([meta.city, meta.street, 'קוד ' + (meta.code || meta.stopId)]
@@ -675,32 +691,67 @@
           (gapBefore !== null ? gapBefore + ' דק׳ אחורה' : '—') + ' · ' +
           (gapAfter !== null ? gapAfter + ' דק׳ קדימה' : '—')
         : '') +
-      (r.origin ? '' : '<br><span style="color:var(--muted)">תחנת ביניים מס׳ ' + (r.seq || '?') +
-        ' במסלול — ככל שהמספר גבוה יותר, שעת ההגעה משוערת יותר.</span>') +
       '</div>';
   }
+  /* מיקום התחנה במסלול: X מתוך Y, בצבע ליניארי ירוק→אדום, עם ציר בהובר */
+  function seqChip(r) {
+    if (r.origin) return '<span class="tag b">מוצא</span>';
+    var first = r.seqFirst || 1, last = r.seqLast || r.seq || 1;
+    var span = Math.max(1, last - first);
+    var pos = Math.max(0, Math.min(1, (r.seq - first) / span));
+    var idx = (r.seq - first) + 1, total = (last - first) + 1;
+    return '<span class="seqchip" tabindex="0" style="background:' + seqColor(pos) + '">' +
+      idx + '/' + total +
+      '<span class="seqpop">תחנה <b>' + idx + '</b> מתוך <b>' + total + '</b> במסלול' +
+      ' — ' + Math.round(pos * 100) + '% מהדרך' +
+      '<span class="seqaxis"><span class="track"></span>' +
+      '<span class="mk" style="inset-inline-end:' + (pos * 100).toFixed(1) + '%"></span></span>' +
+      '<span class="seqends"><span>מוצא</span><span>סוף מסלול</span></span>' +
+      '</span></span>';
+  }
+  /* ירוק → צהוב → כתום → אדום */
+  function seqColor(p) {
+    var stops = [[0, 22, 163, 74], [0.4, 234, 179, 8], [0.7, 249, 115, 22], [1, 220, 38, 38]];
+    for (var i = 1; i < stops.length; i++) {
+      if (p <= stops[i][0]) {
+        var a = stops[i - 1], b = stops[i];
+        var f = (p - a[0]) / (b[0] - a[0] || 1);
+        return 'rgb(' + Math.round(a[1] + (b[1] - a[1]) * f) + ',' +
+          Math.round(a[2] + (b[2] - a[2]) * f) + ',' +
+          Math.round(a[3] + (b[3] - a[3]) * f) + ')';
+      }
+    }
+    return 'rgb(220,38,38)';
+  }
+
   function ctxSlot(g, isNow) {
     return '<span class="' + (isNow ? 'now' : '') + '">' + fmt(g.t) +
       (g.count > 1 ? '×' + g.count : '') + '</span>';
   }
 
-  function paintDetail() {
-    var plat = $('dPlat').value, type = $('dType').value, only = $('dOnly').value;
-    var rows = detailRows.filter(function (r) {
+  function filteredDetail() {
+    var plat = $('dPlat').value, type = $('dType').value;
+    return detailRows.filter(function (r) {
       if (plat && r.stopId !== plat) return false;
       if (type === 'origin' && !r.origin) return false;
       if (type === 'mid' && r.origin) return false;
       return true;
     }).sort(function (a, b) { return a.t - b.t || (a.line + '').localeCompare(b.line + '', 'he'); });
-
-    // קיבוץ לפי דקת יציאה
-    var groups = [];
-    var cur = null;
+  }
+  function groupByMinute(rows) {
+    var groups = [], cur = null;
     rows.forEach(function (r) {
       var mk = Math.floor(r.t / 60);
       if (!cur || cur.min !== mk) { cur = { min: mk, rows: [] }; groups.push(cur); }
       cur.rows.push(r);
     });
+    return groups;
+  }
+
+  function paintDetail() {
+    var only = $('dOnly').value;
+    var rows = filteredDetail();
+    var groups = groupByMinute(rows);
 
     var Wo = lastOpts.winOrigin, Wm = lastOpts.winMid;
     var shown = groups.filter(function (g) { return only !== 'multi' || g.rows.length > 1; });
@@ -730,7 +781,9 @@
         '<span class="t">' + fmt(g.min * 60) + '</span>' +
         '<span>' + (n === 1 ? 'יציאה אחת' : n + ' יציאות') +
           (nOrg && nOrg !== n ? ' · ' + nOrg + ' מוצא' : '') + '</span>' +
-        (n > 1 ? '<span class="tag a" style="margin-inline-start:auto">חפיפה</span>' : '') +
+        '<button class="sm showpaths" data-min="' + g.min + '" style="margin-inline-start:auto">' +
+        '<svg class="ic"><use href="#i-map"></use></svg> מסלולים</button>' +
+        (n > 1 ? '<span class="tag a">חפיפה</span>' : '') +
         '</div><table><tbody>');
       g.rows.forEach(function (r) {
         html.push('<tr><td style="width:52px" class="num">' + fmtSec(r.t) + '</td>' +
@@ -739,11 +792,10 @@
           '<td style="white-space:normal">' + esc(r.headsign || r.lineLong) +
             (r.platform ? ' <span class="tag n">רציף ' + esc(r.platform) + '</span>' : '') +
             '<br><span class="tid">' + esc(r.tripId) + '</span>' +
-            (r.makat ? ' <span class="tid">' + esc(r.makat) + '</span>' : '') +
-            routeCtxHtml(r) + '</td>' +
-          '<td style="width:52px">' + (r.origin
-            ? '<span class="tag b">מוצא</span>'
-            : '<span class="tag n">תחנה ' + (r.seq || '?') + '</span>') + '</td></tr>');
+            (r.makat ? ' <span class="tid">' + esc(r.makat) + '</span>' : '') + '</td>' +
+          '<td style="width:96px">' + seqChip(r) + '</td></tr>');
+        var ctx = routeCtxHtml(r);
+        if (ctx) html.push('<tr class="ctxrow"><td colspan="5">' + ctx + '</td></tr>');
       });
       html.push('</tbody></table></div>');
     });
@@ -754,58 +806,122 @@
       'מוצגות ' + shown.length + ' מתוך ' + groups.length + ' דקות · ' + rows.length + ' יציאות.<br>' +
       'ה-trip_id מוצג לצד כל יציאה לצורך אימות מול מערכות אחרות.<br>' +
       'תיבת ההקשר מציגה את שעות היציאה של אותו קו <b>מתחנת המוצא שלו</b> — ' +
-      'לא את השעות בתחנה הזו — כדי לבחון אם אפשר להזיז את הנסיעה קדימה או אחורה.</div>');
+      'לא את השעות בתחנה הזו — כדי לבחון אם אפשר להזיז את הנסיעה קדימה או אחורה.<br>' +
+      'התגית הצבעונית = מיקום התחנה במסלול (תחנה X מתוך Y). ' +
+      '<b>ככל שהתחנה רחוקה יותר מהמוצא, שעת ההגעה משוערת יותר</b> — ירוק קרוב למוצא, ' +
+      'אדום קרוב לסוף המסלול. מעבר עכבר מציג את המיקום על ציר.</div>');
 
     $('dBody').innerHTML = html.join('');
   }
 
 
-  /* ================= כלי מדידת אורך תחנה (סעיף ג') ================= */
-  var mMap = null, mPts = [], mLine = null, mMarkers = [], mLen = 0;
+  $('dBody').addEventListener('click', function (e) {
+    var b = e.target.closest && e.target.closest('button.showpaths');
+    if (!b) return;
+    var min = parseInt(b.dataset.min, 10);
+    var trips = filteredDetail()
+      .filter(function (r) { return Math.floor(r.t / 60) === min; })
+      .map(function (r) { return r.tripIdx; })
+      .filter(function (v) { return v !== undefined && v !== null; });
+    requestPaths(min, trips);
+  });
 
+  /* ============ פאנל המפה במגירה: מיקום, מדידה ומסלולים ============ */
+  var dMap = null, dLayerStop = null, dLayerMeasure = null, dLayerRoutes = null;
+  var mPts = [], mLen = 0, measuring = false;
+  var pathRows = [], pathVisible = {}, pathFocus = null;
+  var ROUTE_COLORS = ['#1d4ed8', '#b45309', '#15803d', '#7c3aed', '#be123c',
+    '#0e7490', '#a16207', '#4d7c0f', '#9333ea', '#c2410c'];
+
+  function ensureDrawerMap() {
+    if (dMap) return dMap;
+    dMap = L.map('dMap', { zoomControl: true, preferCanvas: false });
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 20, maxNativeZoom: 19,
+      attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+    }).addTo(dMap);
+    dLayerStop = L.layerGroup().addTo(dMap);
+    dLayerRoutes = L.layerGroup().addTo(dMap);
+    dLayerMeasure = L.layerGroup().addTo(dMap);
+    dMap.on('click', function (e) { if (measuring) addMeasurePoint(e.latlng); });
+    return dMap;
+  }
+
+  function openSidePane(zoom) {
+    $('dSide').classList.add('on');
+    $('dMapToggle').innerHTML = '<svg class="ic"><use href="#i-map"></use></svg> הסתר מפה';
+    ensureDrawerMap();
+    if (detailMeta && !isNaN(detailMeta.lat) && !isNaN(detailMeta.lon)) {
+      dLayerStop.clearLayers();
+      L.circleMarker([detailMeta.lat, detailMeta.lon],
+        { radius: 6, color: '#fff', weight: 2, fillColor: '#1d4ed8', fillOpacity: 1 })
+        .bindTooltip(detailMeta.name, { permanent: false }).addTo(dLayerStop);
+      dMap.setView([detailMeta.lat, detailMeta.lon], zoom || 17);
+    }
+    setTimeout(function () { if (dMap) dMap.invalidateSize(); }, 80);
+  }
+  function closeSidePane() {
+    $('dSide').classList.remove('on');
+    $('dMapToggle').innerHTML = '<svg class="ic"><use href="#i-map"></use></svg> הצג מפה';
+    stopMeasuring();
+  }
+
+  $('dMapToggle').addEventListener('click', function () {
+    if ($('dSide').classList.contains('on')) closeSidePane();
+    else { openSidePane(17); setSideMode('מיקום התחנה'); }
+  });
+
+  $('dCtxToggle').addEventListener('click', function () {
+    var off = document.body.classList.toggle('noctx');
+    this.innerHTML = '<svg class="ic"><use href="#i-info"></use></svg> ' +
+      (off ? 'הצג הקשר קו' : 'הסתר הקשר קו');
+  });
+
+  function setSideMode(t) { $('dSideMode').textContent = t; }
+
+  /* ---------- מדידה ---------- */
   $('dMeasureBtn').addEventListener('click', function () {
-    var w = $('dMeasureWrap');
-    if (!w.classList.contains('hide')) { closeMeasure(); return; }
+    if (measuring) { stopMeasuring(); return; }
     if (!detailMeta || isNaN(detailMeta.lat) || isNaN(detailMeta.lon)) {
       showMsg('warn', 'אין קואורדינטות לתחנה הזו, ולכן אי אפשר למדוד אותה.');
       return;
     }
-    w.classList.remove('hide');
-    if (!mMap) {
-      mMap = L.map('dMeasure', { zoomControl: true });
-      L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        maxZoom: 20, maxNativeZoom: 19,
-        attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-      }).addTo(mMap);
-      mMap.on('click', function (e) { addMeasurePoint(e.latlng); });
-    }
-    mMap.setView([detailMeta.lat, detailMeta.lon], 19);
+    openSidePane(19);
+    measuring = true;
+    setSideMode('מדידה');
+    $('dMeasureBtn').classList.add('primary');
+    $('dMeasureSave').classList.remove('hide');
+    $('dMeasureClear').classList.remove('hide');
     clearMeasure();
-    L.circleMarker([detailMeta.lat, detailMeta.lon],
-      { radius: 5, color: '#1d4ed8', fillColor: '#1d4ed8', fillOpacity: 1 }).addTo(mMap);
-    setTimeout(function () { mMap.invalidateSize(); }, 60);
   });
-
+  function stopMeasuring() {
+    measuring = false;
+    $('dMeasureBtn').classList.remove('primary');
+    $('dMeasureSave').classList.add('hide');
+    $('dMeasureClear').classList.add('hide');
+    $('dMeasureVal').textContent = '';
+    $('dMeasureHint').textContent = '';
+    if (dLayerMeasure) dLayerMeasure.clearLayers();
+    mPts = []; mLen = 0;
+    setSideMode('מיקום התחנה');
+  }
   function addMeasurePoint(ll) {
     mPts.push([ll.lat, ll.lng]);
-    var mk = L.circleMarker(ll, { radius: 4, color: '#b91c1c', fillColor: '#fff', fillOpacity: 1 }).addTo(mMap);
-    mMarkers.push(mk);
-    if (mLine) mMap.removeLayer(mLine);
+    L.circleMarker(ll, { radius: 4, color: '#b91c1c', fillColor: '#fff', fillOpacity: 1 })
+      .addTo(dLayerMeasure);
     if (mPts.length > 1) {
-      mLine = L.polyline(mPts, { color: '#b91c1c', weight: 3 }).addTo(mMap);
       mLen = 0;
       for (var i = 1; i < mPts.length; i++) mLen += haversine(mPts[i - 1], mPts[i]);
-      var mid = mPts[mPts.length - 1];
-      L.marker(mid, { icon: L.divIcon({ className: '', html:
-        '<span class="measure-lbl">' + mLen.toFixed(1) + ' מ׳</span>' }) }).addTo(mMap);
+      L.polyline(mPts, { color: '#b91c1c', weight: 3 }).addTo(dLayerMeasure);
+      L.marker(mPts[mPts.length - 1], { icon: L.divIcon({ className: '',
+        html: '<span class="measure-lbl">' + mLen.toFixed(1) + ' מ׳</span>' }) }).addTo(dLayerMeasure);
     }
     $('dMeasureVal').textContent = mLen.toFixed(1) + ' מ׳';
     $('dMeasureHint').textContent = mPts.length < 2
-      ? 'סמן נקודה נוספת בקצה השני של התחנה'
-      : 'אפשר להמשיך לסמן כדי למדוד תחנה מפותלת · ' + Math.floor(mLen / 12) + ' אוטובוסים';
+      ? 'סמן נקודה נוספת בקצה השני'
+      : Math.floor(mLen / (parseFloat($('busLen').value) || 12)) + ' אוטובוסים';
     $('dMeasureSave').disabled = mLen <= 0;
   }
-
   function haversine(a, b) {
     var R = 6371000, rad = Math.PI / 180;
     var dLat = (b[0] - a[0]) * rad, dLon = (b[1] - a[1]) * rad;
@@ -813,32 +929,171 @@
       Math.cos(a[0] * rad) * Math.cos(b[0] * rad) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
     return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
   }
-
   function clearMeasure() {
-    if (mMap) {
-      mMarkers.forEach(function (m) { mMap.removeLayer(m); });
-      if (mLine) mMap.removeLayer(mLine);
-      mMap.eachLayer(function (l) { if (l instanceof L.Marker) mMap.removeLayer(l); });
-    }
-    mPts = []; mMarkers = []; mLine = null; mLen = 0;
+    if (dLayerMeasure) dLayerMeasure.clearLayers();
+    mPts = []; mLen = 0;
     $('dMeasureVal').textContent = '0 מ׳';
     $('dMeasureHint').textContent = 'לחץ על המפה כדי לסמן את קצות התחנה';
     $('dMeasureSave').disabled = true;
   }
-  function closeMeasure() { $('dMeasureWrap').classList.add('hide'); }
-
   $('dMeasureClear').addEventListener('click', clearMeasure);
-  $('dMeasureClose').addEventListener('click', closeMeasure);
   $('dMeasureSave').addEventListener('click', function () {
     if (!detailMeta || mLen <= 0) return;
     LENS[detailMeta.stopId] = Math.round(mLen * 10) / 10;
-    saveLens();
-    render();
-    showMsg('ok', 'נשמר: אורך ' + mLen.toFixed(1) + ' מ׳ לתחנה ' +
-      detailMeta.name + ' (קיבולת ' + Math.max(1, Math.floor(mLen / (parseFloat($('busLen').value) || 12))) +
-      ' אוטובוסים). הערך נשמר בדפדפן ויישמר גם בהרצות הבאות.');
-    closeMeasure();
+    saveLens(); render();
+    showMsg('ok', 'נשמר: ' + mLen.toFixed(1) + ' מ׳ לתחנה ' + detailMeta.name +
+      ' (קיבולת ' + Math.max(1, Math.floor(mLen / (parseFloat($('busLen').value) || 12))) + ').');
+    stopMeasuring();
   });
+
+  /* ---------- מסלולי הקווים של דקה נבחרת (סעיף ה') ---------- */
+  function requestPaths(minute, trips) {
+    if (!worker) return;
+    openSidePane(14);
+    setSideMode('מסלולים · ' + fmt(minute * 60));
+    $('dRouteList').classList.remove('hide');
+    $('dRouteList').innerHTML = '<span class="hint">טוען מסלולים…</span>';
+    worker.postMessage({ type: 'paths', u: detailMeta.u, minute: minute, trips: trips });
+  }
+
+  function renderPaths(m) {
+    pathRows = m.rows || [];
+    pathVisible = {}; pathFocus = null;
+    dLayerRoutes.clearLayers();
+    if (!pathRows.length) {
+      $('dRouteList').innerHTML = '<span class="hint">' +
+        esc(m.note || 'לא נמצאו מסלולים להצגה.') + '</span>';
+      return;
+    }
+    pathRows.forEach(function (p, i) { pathVisible[i] = true; });
+    $('dRouteList').innerHTML = pathRows.map(function (p, i) {
+      return '<label><input type="checkbox" data-i="' + i + '" checked>' +
+        '<span class="sw" style="background:' + ROUTE_COLORS[i % ROUTE_COLORS.length] + '"></span>' +
+        '<b>' + esc(p.line) + '</b> ' + esc(p.agency) +
+        ' <span class="hint" style="margin:0">' + p.pts.length + ' תחנות</span></label>';
+    }).join('') + (m.note ? '<div class="hint">' + esc(m.note) + '</div>' : '');
+    drawPaths();
+  }
+
+  function drawPaths() {
+    dLayerRoutes.clearLayers();
+    var all = [];
+    pathRows.forEach(function (p, i) {
+      if (!pathVisible[i]) return;
+      var dim = pathFocus !== null && pathFocus !== i;
+      var pts = p.pts.map(function (x) { return [x.lat, x.lon]; });
+      if (pts.length < 2) return;
+      L.polyline(pts, {
+        color: ROUTE_COLORS[i % ROUTE_COLORS.length],
+        weight: dim ? 2 : 4, opacity: dim ? 0.25 : 0.85
+      }).bindTooltip('קו ' + p.line + ' · ' + p.headsign).addTo(dLayerRoutes);
+      if (!dim) all = all.concat(pts);
+    });
+    if (all.length) { try { dMap.fitBounds(all, { padding: [20, 20] }); } catch (e) {} }
+  }
+
+  $('dRouteList').addEventListener('change', function (e) {
+    if (e.target.type !== 'checkbox') return;
+    pathVisible[e.target.dataset.i] = e.target.checked;
+    drawPaths();
+  });
+  $('dRouteList').addEventListener('mouseover', function (e) {
+    var l = e.target.closest('label');
+    if (!l) return;
+    pathFocus = parseInt(l.querySelector('input').dataset.i, 10);
+    drawPaths();
+  });
+  $('dRouteList').addEventListener('mouseleave', function () { pathFocus = null; drawPaths(); });
+
+  /* ---------- ייצוא התחנה ---------- */
+  $('dExportCsv').addEventListener('click', function () {
+    if (!worker || !detailMeta) return;
+    busy = true;
+    setProgress(-1, 'בונה CSV לתחנה…');
+    worker.postMessage({ type: 'exportStop', u: detailMeta.u });
+  });
+
+  $('dExportPng').addEventListener('click', function () { exportDrawerPng(); });
+
+  /* מצייר את כל היציאות של התחנה לתמונה אחת. כתיבה ידנית על canvas
+     במקום ספריית צילום — פלט צפוי, RTL נכון, ובלי תלות חיצונית. */
+  function exportDrawerPng() {
+    if (!detailRows || !detailMeta) return;
+    var rows = filteredDetail();
+    if (!rows.length) { showMsg('warn', 'אין יציאות להצגה בסינון הנוכחי.'); return; }
+    var groups = groupByMinute(rows);
+
+    var W = 1100, pad = 26, rowH = 26, hdrH = 30, titleH = 86;
+    var H = titleH + groups.reduce(function (a, g) { return a + hdrH + g.rows.length * rowH + 8; }, 0) + pad + 34;
+    var c = document.createElement('canvas');
+    var dpr = 2;
+    c.width = W * dpr; c.height = H * dpr;
+    var x = c.getContext('2d');
+    x.scale(dpr, dpr);
+    x.direction = 'rtl';
+    x.textBaseline = 'middle';
+    var bg = '#ffffff', ink = '#141821', muted = '#5c6675', line = '#e3e7ec';
+    x.fillStyle = bg; x.fillRect(0, 0, W, H);
+
+    var right = W - pad;
+    x.fillStyle = ink; x.font = 'bold 22px "Segoe UI", Arial, sans-serif';
+    x.fillText(detailMeta.name + (detailMeta.platform ? ' — רציף ' + detailMeta.platform : ''), right, 30);
+    x.fillStyle = muted; x.font = '13px "Segoe UI", Arial, sans-serif';
+    x.fillText([detailMeta.city, detailMeta.street, 'קוד ' + (detailMeta.code || detailMeta.stopId)]
+      .filter(Boolean).join(' · '), right, 54);
+    x.fillStyle = ink; x.font = 'bold 14px "Segoe UI", Arial, sans-serif';
+    x.fillText(describeWhen(lastOpts), right, 74);
+
+    var cols = [0, 90, 165, 300, 760, 1000];  // מרווחים מימין
+    var y = titleH;
+    groups.forEach(function (g) {
+      var multi = g.rows.length > 1;
+      x.fillStyle = multi ? '#fee2e2' : '#f6f7f9';
+      x.fillRect(pad, y, W - pad * 2, hdrH);
+      x.fillStyle = multi ? '#b91c1c' : ink;
+      x.font = 'bold 15px "Segoe UI", Arial, sans-serif';
+      x.fillText(fmt(g.min * 60) + '  ·  ' +
+        (g.rows.length === 1 ? 'יציאה אחת' : g.rows.length + ' יציאות') +
+        (multi ? '  ·  חפיפה' : ''), right - 8, y + hdrH / 2);
+      y += hdrH;
+      g.rows.forEach(function (r, i) {
+        if (i % 2) { x.fillStyle = '#fafbfc'; x.fillRect(pad, y, W - pad * 2, rowH); }
+        x.font = '13px "Segoe UI", Arial, sans-serif';
+        x.fillStyle = ink;
+        x.fillText(fmtSec(r.t), right - 8, y + rowH / 2);
+        x.font = 'bold 13px "Segoe UI", Arial, sans-serif';
+        x.fillText(r.line, right - cols[1], y + rowH / 2);
+        x.font = '13px "Segoe UI", Arial, sans-serif';
+        x.fillStyle = muted;
+        x.fillText(r.agency, right - cols[2], y + rowH / 2);
+        x.fillStyle = ink;
+        var dest = (r.headsign || r.lineLong || '').slice(0, 46);
+        x.fillText(dest, right - cols[3], y + rowH / 2);
+        x.fillStyle = muted;
+        x.font = '11px "Segoe UI", Arial, sans-serif';
+        x.fillText(r.origin ? 'מוצא' : 'תחנה ' + ((r.seq - (r.seqFirst || 1)) + 1) +
+          '/' + (((r.seqLast || r.seq) - (r.seqFirst || 1)) + 1), right - cols[4], y + rowH / 2);
+        x.fillStyle = '#9aa3ad';
+        x.fillText(r.tripId, right - cols[5], y + rowH / 2);
+        y += rowH;
+      });
+      x.strokeStyle = line; x.lineWidth = 1;
+      x.beginPath(); x.moveTo(pad, y + 0.5); x.lineTo(W - pad, y + 0.5); x.stroke();
+      y += 8;
+    });
+
+    x.fillStyle = muted; x.font = '12px "Segoe UI", Arial, sans-serif';
+    x.fillText('הופק מקובץ GTFS · ' + rows.length + ' יציאות · ' + groups.length + ' דקות', right, H - 20);
+
+    c.toBlob(function (blob) {
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'stop-' + (detailMeta.code || detailMeta.stopId) + '-' +
+        (lastOpts && lastOpts.date ? lastOpts.date : 'day') + '.png';
+      document.body.appendChild(a); a.click();
+      setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+    }, 'image/png');
+  }
 
   /* ================= לשונית לוחות זמנים (סעיף ט') ================= */
   var ROUTES = [];
@@ -847,21 +1102,32 @@
 
   $('rq').addEventListener('input', renderRoutes);
   $('rFilter').addEventListener('change', renderRoutes);
+  /* הייצוא חייב להיות בדיוק מה שמוצג בטבלה — כולל תיבת החיפוש */
   $('exportRoutes').addEventListener('click', function () {
     if (!worker) return;
+    var shown = visibleRoutes();
+    if (!shown.length) { showMsg('warn', 'אין קווים לייצוא בסינון הנוכחי.'); return; }
     busy = true;
-    setProgress(-1, 'בונה קובץ לוחות זמנים…');
-    worker.postMessage({ type: 'exportRoutes', onlyDup: $('rFilter').value === 'dup', maxCols: 80 });
+    setProgress(-1, 'בונה קובץ לוחות זמנים (' + shown.length + ' קווים)…');
+    worker.postMessage({ type: 'exportRoutes', onlyDup: false, maxCols: 80,
+      only: shown.map(function (r) { return r.ri; }) });
   });
 
-  function renderRoutes() {
+  function visibleRoutes() {
     var q = $('rq').value.trim();
     var onlyDup = $('rFilter').value === 'dup';
-    var rows = ROUTES.filter(function (r) {
+    return ROUTES.filter(function (r) {
       if (onlyDup && !r.dup) return false;
       if (q && (r.line + ' ' + r.long + ' ' + r.agency + ' ' + r.makat).indexOf(q) === -1) return false;
       return true;
-    }).slice(0, 800);
+    });
+  }
+
+  function renderRoutes() {
+    var all = visibleRoutes();
+    var rows = all.slice(0, 800);
+    $('exportRoutes').innerHTML = '<svg class="ic"><use href="#i-download"></use></svg> ייצוא ל-Canva (' +
+      all.length + ')';
     $('rBody').innerHTML = rows.map(function (r) {
       return '<tr data-ri="' + r.ri + '">' +
         '<td class="num"><b>' + esc(r.line) + '</b></td>' +
@@ -882,6 +1148,29 @@
     worker.postMessage({ type: 'timetable', ri: parseInt(tr.dataset.ri, 10) });
   });
 
+  /* שורה אחת לכל שעה עגולה, והדקות שבתוכה לצידה */
+  function hourRows(slots) {
+    var byHour = new Map();
+    slots.forEach(function (g) {
+      var h = Math.floor(g.t / 3600);
+      if (!byHour.has(h)) byHour.set(h, []);
+      byHour.get(h).push(g);
+    });
+    var out = [];
+    Array.from(byHour.keys()).sort(function (a, b) { return a - b; }).forEach(function (h) {
+      var gs = byHour.get(h);
+      var tot = gs.reduce(function (a, g) { return a + g.count; }, 0);
+      out.push('<div class="ttrow"><span class="tth">' + pad(h % 24) + ':00' +
+        (h >= 24 ? '<sup>+1</sup>' : '') + '</span>' +
+        '<span class="ttn">' + tot + '</span>' +
+        '<span class="ttmins">' + gs.map(function (g) {
+          return '<span class="slot' + (g.count > 1 ? ' dup' : '') + '">:' +
+            pad(Math.floor((g.t % 3600) / 60)) + (g.count > 1 ? ' ×' + g.count : '') + '</span>';
+        }).join('') + '</span></div>');
+    });
+    return '<div class="tthours">' + out.join('') + '</div>';
+  }
+
   function renderTimetable(m) {
     var html = ['<h3 style="margin:18px 0 4px">קו ' + esc(m.info.line) + ' — ' + esc(m.info.long) + '</h3>',
       '<div class="hint" style="margin-bottom:6px">' + esc(m.info.agency) +
@@ -894,11 +1183,7 @@
         (d.name ? ' — ' + esc(d.name) : '') +
         '<small>' + (d.origin ? 'מ' + esc(d.origin) + ' · ' : '') + total + ' יציאות · ' +
         d.slots.length + ' שעות' + (dup ? ' · ' + dup + ' שעות עם יותר מאוטובוס אחד' : '') +
-        '</small></h4><div class="ttgrid">' +
-        d.slots.map(function (g) {
-          return '<span class="slot' + (g.count > 1 ? ' dup' : '') + '">' + fmt(g.t) +
-            (g.count > 1 ? ' ×' + g.count : '') + '</span>';
-        }).join('') + '</div></div>');
+        '</small></h4>' + hourRows(d.slots) + '</div>');
     });
     html.push('<div class="legend">שעה מסומנת באדום = יותר מאוטובוס אחד יוצא באותה דקה. ' +
       'בייצוא ל-Canva היא מסומנת ב-<code dir="ltr">*X</code>.</div>');

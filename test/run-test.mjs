@@ -361,6 +361,17 @@ const zipD = makeZip({
   check('תווית אנגלית: הרציף חולץ', S('9002').plat, '2');
   check('שורת האנגלית אוחתה ולכן הקואורדינטות תקינות', [S('9002').lat, S('9002').lon], [32.8, 34.99]);
   check('האיחוי דווח באבחון', feed.diag.nStopsRepaired, 1);
+
+  console.log('  --- אבחון תחנות אם (סעיף ו׳) ---');
+  check('בפיד הזה אין אף רציף עם parent_station', feed.diag.nWithParent, 0);
+  check('וגם אין רשומות station', feed.diag.nStationRecords, 0);
+}
+{
+  // פיד א׳ כן מכיל תחנת אם אחת ושני רציפים שמצביעים אליה
+  const src = await Core.makeSource([new File([zipA], 'gtfs.zip')]);
+  const feed = await Core.scanFeed(src, { unit: 'platform' });
+  check('פיד א׳ — רשומת station אחת (location_type=1)', feed.diag.nStationRecords, 1);
+  check('פיד א׳ — שני רציפים מקושרים', feed.diag.nWithParent, 2);
 }
 
 console.log('\n--- splitCsv ברמת היחידה ---');

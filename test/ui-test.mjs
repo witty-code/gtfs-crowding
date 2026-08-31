@@ -48,6 +48,15 @@ const kv = await page.$$eval('#feedKv div', els =>
 console.log(kv.map(s => '  ' + s).join('\n'));
 ok('פאנל פרטי הפיד הוצג', kv.length > 5);
 ok('טווח התאריכים זוהה', kv.some(s => s.startsWith('טווח תאריכים') && s.includes('2026')));
+ok('מוצג כמה רשומות station יש בפיד', kv.some(s => s.startsWith('רשומות מסוג station')));
+// בפיד הדוגמה יש parent_station, ולכן ההסבר לא אמור להופיע.
+// המקרה ההפוך (פיד ללא תחנות אם) נבדק בבדיקות הליבה.
+const parentNote = await page.$$eval('#msgs .note', els =>
+  els.map(e => e.innerText).filter(t => /parent_station/.test(t)));
+const nParent = parseInt((kv.find(x => x.startsWith('רציפים עם parent_station')) || '0')
+  .replace(/\D/g, ''), 10);
+console.log('  רציפים עם תחנת אם: ' + nParent + ' · הסבר מוצג: ' + (parentNote.length > 0));
+ok('ההסבר מוצג רק כשאין תחנות אם', (nParent > 0) === (parentNote.length === 0));
 
 const dates = await page.$$eval('#dateSel option', els => els.map(e => ({ v: e.value, t: e.textContent })));
 console.log('  תאריכים ברשימה: ' + dates.length + ' — ראשון: ' + dates[0].t.trim());
@@ -308,14 +317,12 @@ await page.waitForTimeout(500);
 await page.selectOption('#dType', 'all');   // שלב קודם השאיר "מוצא בלבד"
 await page.selectOption('#dOnly', 'all');
 await page.waitForTimeout(300);
-const midTags = await page.$$eval('.mingrp .tag.n', els =>
-  els.map(e => e.textContent).filter(t => /^תחנה \d+$/.test(t)));
-const midCtx = await page.$$eval('.ctxbox', els =>
-  els.map(e => e.innerText).filter(t => /תחנת ביניים מס/.test(t)));
-console.log('  תגיות תחנת ביניים: ' + midTags.slice(0, 4).join(', '));
-console.log('  הסבר ביניים: ' + (midCtx[0] || '(אין)').replace(/\s+/g, ' ').slice(-90));
-ok('תחנת ביניים מציגה את מספרה במסלול', midTags.length > 0);
-ok('מוסבר שמספר תחנה גבוה = הגעה משוערת יותר', midCtx.length > 0);
+const midTags = await page.$$eval('.seqchip', els =>
+  els.map(e => e.textContent.split('תחנה')[0].trim()).filter(t => /^\d+\/\d+$/.test(t)));
+console.log('  מחווני מיקום במסלול: ' + midTags.slice(0, 5).join(', '));
+ok('תחנת ביניים מציגה מיקום X/Y במסלול', midTags.length > 0);
+ok('המיקום הגיוני (X קטן או שווה ל-Y)',
+  midTags.every(t => { const [a2, b2] = t.split('/').map(Number); return a2 >= 1 && a2 <= b2; }));
 await page.click('#dClose');
 await page.waitForTimeout(250);
 await page.selectOption('#typeFilter', 'all');
@@ -326,9 +333,9 @@ await page.waitForTimeout(400);
 
 console.log('\n=== כלי מדידת אורך תחנה ===');
 await page.click('#dMeasureBtn');
-await page.waitForTimeout(900);
-ok('פאנל המדידה נפתח', await page.isVisible('#dMeasure'));
-const box = await page.$eval('#dMeasure', e => { const r = e.getBoundingClientRect();
+await page.waitForTimeout(1000);
+ok('פאנל הצד נפתח עם המפה', await page.isVisible('#dMap'));
+const box = await page.$eval('#dMap', e => { const r = e.getBoundingClientRect();
   return { x: r.x, y: r.y, w: r.width, h: r.height }; });
 await page.mouse.click(box.x + box.w * 0.42, box.y + box.h * 0.5);
 await page.waitForTimeout(250);
@@ -337,23 +344,117 @@ await page.waitForTimeout(350);
 const measured = await page.textContent('#dMeasureVal');
 console.log('  נמדד: ' + measured);
 ok('המדידה מחזירה אורך במטרים', /^[\d.]+ מ׳$/.test(measured) && parseFloat(measured) > 0);
-ok('כפתור השמירה נדלק', await page.isEnabled('#dMeasureSave'));
 const stopBeingMeasured = await page.$eval('#tbody tr:first-child input.len', e => e.dataset.stop);
 await page.click('#dMeasureSave');
 await page.waitForTimeout(400);
 const savedLen = await page.$$eval('#tbody input.len', (els, sid) => {
   const el = els.find(x => x.dataset.stop === sid); return el ? el.value : null;
 }, stopBeingMeasured);
-console.log('  נשמר בטבלה: ' + savedLen);
 ok('האורך שנמדד נשמר על התחנה', savedLen !== null && parseFloat(savedLen) === parseFloat(measured));
 const persisted = await page.evaluate(s2 =>
   JSON.parse(localStorage.getItem('gtfsCrowdLens') || '{}')[s2], stopBeingMeasured);
 ok('האורך נשמר בזיכרון הדפדפן', typeof persisted === 'number' && persisted > 0);
-await page.screenshot({ path: path.join(root, 'test/screenshot-measure.png') });
-await page.click('#dClose');
-await page.waitForTimeout(300);
+
+console.log('\n=== מגירה דו-טורית, טוגל הקשר ומחוון מיקום ===');
+const wide = await page.evaluate(() => {
+  const d = document.getElementById('drawer');
+  return { w: Math.round(d.getBoundingClientRect().width), vw: document.documentElement.clientWidth };
+});
+console.log('  רוחב המגירה: ' + wide.w + ' מתוך ' + wide.vw);
+ok('המגירה רחבה מ-800px במסך רחב', wide.w > 800);
+const sideOn = await page.evaluate(() => {
+  const s2 = document.getElementById('dSide');
+  const b = document.getElementById('dBody');
+  return { sideX: s2.getBoundingClientRect().x, bodyX: b.getBoundingClientRect().x,
+    sameRow: Math.abs(s2.getBoundingClientRect().y - b.getBoundingClientRect().y) < 60 };
+});
+console.log('  ' + JSON.stringify(sideOn));
+ok('המפה משמאל והנתונים מימין, באותה שורה', sideOn.sideX < sideOn.bodyX && sideOn.sameRow);
+
+const ctxBefore = await page.$$eval('.ctxrow', e => e.filter(x => x.offsetParent !== null).length);
+await page.click('#dCtxToggle');
+await page.waitForTimeout(200);
+const ctxAfter = await page.$$eval('.ctxrow', e => e.filter(x => x.offsetParent !== null).length);
+console.log('  תיבות הקשר: ' + ctxBefore + ' → ' + ctxAfter);
+ok('טוגל אחד מכבה את כל תיבות ההקשר', ctxBefore > 0 && ctxAfter === 0);
+await page.click('#dCtxToggle');
+await page.waitForTimeout(200);
+ok('והטוגל מחזיר אותן', (await page.$$eval('.ctxrow', e => e.filter(x => x.offsetParent !== null).length)) > 0);
+
+const chips = await page.$$eval('.seqchip', els => els.map(e => ({
+  txt: e.textContent.split('תחנה')[0].trim(), bg: getComputedStyle(e).backgroundColor })));
+console.log('  מחווני מיקום: ' + chips.slice(0, 4).map(c => c.txt).join(', '));
+ok('מוצג "X/Y" למיקום התחנה במסלול', chips.some(c => /^\d+\/\d+$/.test(c.txt)));
+ok('לכל מחוון צבע משלו לפי המיקום', new Set(chips.map(c => c.bg)).size > 1);
+const popShown = await page.evaluate(() => {
+  const c = document.querySelector('.seqchip');
+  if (!c) return null;
+  c.focus();
+  const p = c.querySelector('.seqpop');
+  const mk = c.querySelector('.seqaxis .mk');
+  return { visible: getComputedStyle(p).display !== 'none', hasAxis: !!mk,
+    pos: mk ? mk.style.insetInlineEnd : null, text: p.textContent.slice(0, 60) };
+});
+console.log('  ' + JSON.stringify(popShown));
+ok('פופ-הובר נפתח עם ציר וסמן', popShown && popShown.visible && popShown.hasAxis);
+ok('הסמן ממוקם באחוזים', popShown && /%$/.test(popShown.pos || ''));
+const legendOnce = await page.$$eval('#dBody .legend', els =>
+  els.map(e => e.innerText).join(' ').split('משוערת יותר').length - 1);
+console.log('  "משוערת יותר" מופיע במקרא: ' + legendOnce + ' פעמים');
+ok('ההסבר מופיע פעם אחת במקרא ולא בכל שורה', legendOnce === 1);
+
+console.log('\n=== מסלולי הקווים לדקה נבחרת ===');
+await page.click('.mingrp .showpaths');
+await page.waitForFunction(() => {
+  const l = document.getElementById('dRouteList');
+  return l && !l.classList.contains('hide') && !/טוען/.test(l.textContent);
+}, { timeout: 30000 });
+await page.waitForTimeout(700);
+const paths = await page.evaluate(() => ({
+  boxes: document.querySelectorAll('#dRouteList input[type=checkbox]').length,
+  lines: document.querySelectorAll('#dMap path.leaflet-interactive').length,
+  txt: document.getElementById('dRouteList').innerText.replace(/\s+/g, ' ').slice(0, 110)
+}));
+console.log('  ' + JSON.stringify(paths));
+ok('נטענו מסלולים לדקה', paths.boxes > 0);
+ok('המסלולים משורטטים על המפה', paths.lines > 0);
+const afterUncheck = await page.evaluate(async () => {
+  const cb = document.querySelector('#dRouteList input[type=checkbox]');
+  cb.checked = false; cb.dispatchEvent(new Event('change', { bubbles: true }));
+  await new Promise(r => setTimeout(r, 400));
+  return document.querySelectorAll('#dMap path.leaflet-interactive').length;
+});
+console.log('  קווים אחרי כיבוי אחד: ' + afterUncheck);
+ok('אפשר לכבות מסלול בודד', afterUncheck < paths.lines);
+await page.screenshot({ path: path.join(root, 'test/screenshot-drawer.png') });
+
+console.log('\n=== ייצוא התחנה ===');
+const dlPng = page.waitForEvent('download', { timeout: 30000 });
+await page.click('#dExportPng');
+const png = await dlPng;
+const pngBuf = [];
+for await (const c of await png.createReadStream()) pngBuf.push(c);
+const pngData = Buffer.concat(pngBuf);
+console.log('  תמונה: ' + png.suggestedFilename() + ' · ' + Math.round(pngData.length / 1024) + ' KB');
+ok('נוצרה תמונת PNG', pngData.length > 3000 && pngData[1] === 0x50 && pngData[2] === 0x4e);
+ok('שם התמונה כולל את קוד התחנה', /^stop-\d+/.test(png.suggestedFilename()));
+
+const dlStop = page.waitForEvent('download', { timeout: 30000 });
+await page.click('#dExportCsv');
+const stopCsv = await dlStop;
+let sc = '';
+for await (const c of await stopCsv.createReadStream()) sc += c;
+const scLines = sc.split('\r\n');
+console.log('  CSV תחנה: ' + stopCsv.suggestedFilename() + ' · ' + (scLines.length - 1) + ' שורות');
+console.log('  כותרת: ' + scLines[0].slice(0, 120));
+ok('CSV פר תחנה נוצר', scLines.length > 2);
+ok('כולל שעה, דקה ומספר תחנה במסלול',
+  ['שעה', 'דקה', 'מספר תחנה במסלול', 'trip_id'].every(h => scLines[0].includes(h)));
+ok('כולל כמה יציאות באותה דקה', scLines[0].includes('יציאות באותה דקה'));
 
 console.log('\n=== נגישות: aria-hidden ===');
+await page.click('#dClose');           // הבדיקות כאן נוגעות למצב הסגור
+await page.waitForTimeout(450);
 const a11y = await page.evaluate(() => {
   const d = document.getElementById('drawer');
   return { hasAria: d.hasAttribute('aria-hidden'), inert: d.inert === true,

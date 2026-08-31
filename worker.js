@@ -6,6 +6,7 @@ let SRC = null;
 let LAST = null;      // תוצאת הניתוח האחרונה (כולל מערכי הזמנים לפירוט)
 let CANCEL = false;
 let ROUTE_TT = null;   // מטמון לוח היציאות לכל קו, נבנה לפי דרישה
+let PATHS = null;      // מטמון מסלולי הנסיעות
 
 function send(msg) { self.postMessage(msg); }
 const abort = function () { return CANCEL; };
@@ -32,7 +33,7 @@ function runAnalyze(opts) {
   send({ type: 'progress', text: 'מחשב עומס…', indeterminate: true });
   const res = GTFSCore.analyze(FEED, opts);
   LAST = { res: res, opts: opts };
-  ROUTE_TT = null;   // ההגדרות השתנו — המטמון כבר לא תקף
+  ROUTE_TT = null; PATHS = null;   // ההגדרות השתנו — המטמון כבר לא תקף
 
   const warnings = FEED.warnings.slice();
   if (!opts.date && opts.day !== null && opts.day !== undefined) {
@@ -68,10 +69,24 @@ function routeTT() {
   return ROUTE_TT;
 }
 
+/**
+ * מספר הקו לתצוגה. בפיד הישראלי route_short_name ריק אצל חלק מהקווים
+ * (בעיקר רכבת), ולכן נופלים אחורה למק"ט ואז ל-route_id.
+ */
+function lineNumber(ri) {
+  const sh = (FEED.routes.short[ri] || '').trim();
+  if (sh) return sh;
+  const desc = (FEED.routes.desc[ri] || '').trim();
+  if (desc) return desc.split('-')[0];
+  return FEED.routes.id ? FEED.routes.id[ri] : '';
+}
+
 function routeInfo(ri) {
   return {
     ri: ri,
-    line: FEED.routes.short[ri], long: FEED.routes.long[ri],
+    line: lineNumber(ri),
+    shortName: FEED.routes.short[ri],
+    long: FEED.routes.long[ri],
     agency: FEED.routes.agency[ri], makat: FEED.routes.desc[ri]
   };
 }
@@ -144,7 +159,11 @@ self.onmessage = async function (e) {
           }
         }
         out.push({
+          tripIdx: ti,
           seq: r._SQ[i],
+          seqFirst: FEED.origins.seq[ti],
+          seqLast: FEED.origins.maxSeq[ti],
+          nStops: FEED.origins.nStops[ti],
           ctx: ctx,
           t: r._T[i],
           origin: !!r._OG[i],
@@ -198,8 +217,77 @@ self.onmessage = async function (e) {
     } else if (msg.type === 'exportRoutes') {
       if (!LAST) throw new Error('אין תוצאות.');
       send({ type: 'progress', text: 'בונה קובץ לוחות זמנים…', indeterminate: true });
-      send({ type: 'export', csv: buildRoutesCsv(msg.onlyDup, msg.maxCols),
+      send({ type: 'export', csv: buildRoutesCsv(msg.onlyDup, msg.maxCols, msg.only),
         name: 'gtfs-timetables-' + (LAST.opts.date || 'day' + LAST.opts.day) + '.csv' });
+
+    } else if (msg.type === 'exportStop') {
+      if (!LAST) throw new Error('אין תוצאות.');
+      const r = LAST.res.allRows.find(function (x) { return x.u === msg.u; });
+      if (!r) throw new Error('לא נמצאה תחנה.');
+      const m = stopMeta(FEED, msg.u);
+      const when = LAST.opts.date ? GTFSCore.fmtDateHe(LAST.opts.date)
+        : 'יום ' + GTFSCore.DAY_HE[LAST.opts.day];
+      const q = function (v) {
+        v = v === undefined || v === null ? '' : String(v);
+        return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
+      };
+      const head = ['תאריך', 'שם תחנה', 'קוד תחנה', 'stop_id', 'רציף', 'עיר',
+        'שעה', 'דקה', 'סוג', 'מספר תחנה במסלול', 'סה"כ תחנות בנסיעה',
+        'קו', 'מפעיל', 'יעד', 'מק"ט', 'trip_id', 'יציאות באותה דקה'];
+      const perMin = {};
+      for (let i = 0; i < r._T.length; i++) {
+        const k = Math.floor(r._T[i] / 60);
+        perMin[k] = (perMin[k] || 0) + 1;
+      }
+      const lines = [head.join(',')];
+      const order = [];
+      for (let i = 0; i < r._T.length; i++) order.push(i);
+      order.sort(function (a, b) { return r._T[a] - r._T[b]; });
+      for (const i of order) {
+        const ti = r._TR[i], ri = FEED.trips.route[ti], si = r._ST[i];
+        lines.push([when, m.name, m.code, m.stopId, FEED.stops.platform[si], m.city,
+          GTFSCore.fmtTime(r._T[i]), GTFSCore.fmtTime(Math.floor(r._T[i] / 60) * 60),
+          r._OG[i] ? 'מוצא' : 'ביניים',
+          r._SQ[i], FEED.origins.nStops[ti],
+          ri >= 0 ? lineNumber(ri) : '', ri >= 0 ? FEED.routes.agency[ri] : '',
+          FEED.trips.headsign[ti], ri >= 0 ? FEED.routes.desc[ri] : '',
+          FEED.trips.id[ti], perMin[Math.floor(r._T[i] / 60)]].map(q).join(','));
+      }
+      send({ type: 'export', csv: '﻿' + lines.join('\r\n'),
+        name: 'stop-' + (m.code || m.stopId) + '-' + (LAST.opts.date || 'day') + '.csv' });
+
+    } else if (msg.type === 'paths') {
+      if (!LAST) throw new Error('אין תוצאות.');
+      if (FEED.mode !== 'all') {
+        send({ type: 'paths', u: msg.u, minute: msg.minute, rows: [],
+          note: 'שרטוט מסלולים דורש מצב "כולל תחנות ביניים" — במצב "תחנות מוצא בלבד" ' +
+                'נשמרת רק היציאה הראשונה של כל נסיעה.' });
+      } else {
+        if (!PATHS) PATHS = GTFSCore.tripPathIndex(FEED);
+        const out = [];
+        for (const ti of msg.trips) {
+          const arr = PATHS.get(ti) || [];
+          const pts = [];
+          for (const p of arr) {
+            const la = FEED.stops.lat[p.st], lo = FEED.stops.lon[p.st];
+            if (isNaN(la) || isNaN(lo)) continue;
+            pts.push({ lat: la, lon: lo, seq: p.sq, t: p.t,
+              name: FEED.stops.name[p.st], code: FEED.stops.code[p.st] });
+          }
+          const ri = FEED.trips.route[ti];
+          out.push({
+            tripId: FEED.trips.id[ti], line: ri >= 0 ? lineNumber(ri) : '',
+            agency: ri >= 0 ? FEED.routes.agency[ri] : '',
+            headsign: FEED.trips.headsign[ti],
+            seqFirst: FEED.origins.seq[ti], seqLast: FEED.origins.maxSeq[ti],
+            nStops: FEED.origins.nStops[ti], pts: pts
+          });
+        }
+        send({ type: 'paths', u: msg.u, minute: msg.minute, rows: out,
+          note: out.some(function (p) { return p.pts.length < p.nStops; })
+            ? 'המסלול מצויר מהעצירות שנקראו בטווח השעות שנבחר, ולכן עשוי להיקטע בקצוות.'
+            : '' });
+      }
 
     } else if (msg.type === 'export') {
       if (!LAST) throw new Error('אין תוצאות לייצוא.');
@@ -301,7 +389,8 @@ function dirOrigin(ri, d) {
  * אחת (Dir1_Times) לעיצובים שמשתמשים בתיבת טקסט אחת.
  * שעה שיוצאים בה כמה אוטובוסים מסומנת ב-*X.
  */
-function buildRoutesCsv(onlyDup, maxCols) {
+function buildRoutesCsv(onlyDup, maxCols, only) {
+  const allow = only && only.length ? new Set(only) : null;
   maxCols = maxCols || 60;
   const tt = routeTT();
   const q = function (v) {
@@ -319,6 +408,7 @@ function buildRoutesCsv(onlyDup, maxCols) {
     const ds = Array.from(dirs.keys()).sort();
     const d1 = dirs.get(ds[0]) || [];
     const d2 = ds.length > 1 ? (dirs.get(ds[1]) || []) : [];
+    if (allow && !allow.has(ri)) return;
     const dup = d1.concat(d2).some(function (g) { return g.count > 1; });
     if (onlyDup && !dup) return;
     need = Math.max(need, d1.length, d2.length);
@@ -337,15 +427,15 @@ function buildRoutesCsv(onlyDup, maxCols) {
   const out = [head.join(',')];
 
   rows.sort(function (a, b) {
-    const la = parseInt(FEED.routes.short[a.ri], 10), lb = parseInt(FEED.routes.short[b.ri], 10);
+    const la = parseInt(lineNumber(a.ri), 10), lb = parseInt(lineNumber(b.ri), 10);
     if (!isNaN(la) && !isNaN(lb) && la !== lb) return la - lb;
-    return String(FEED.routes.short[a.ri]).localeCompare(String(FEED.routes.short[b.ri]), 'he');
+    return String(lineNumber(a.ri)).localeCompare(String(lineNumber(b.ri)), 'he');
   });
 
   for (const r of rows) {
     const t1 = r.d1.map(slotText), t2 = r.d2.map(slotText);
     const line = [
-      FEED.routes.short[r.ri],
+      lineNumber(r.ri),
       FEED.routes.long[r.ri],
       dirHeadsign(r.ri, r.ds[0]),
       r.ds.length > 1 ? dirHeadsign(r.ri, r.ds[1]) : '',

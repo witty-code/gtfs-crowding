@@ -180,7 +180,7 @@ input.len{width:72px;padding:4px 6px;font-size:12.5px;text-align:center}
   opacity:0;pointer-events:none;transition:opacity .25s}
 #backdrop.open{opacity:1;pointer-events:auto}
 #drawer{
-  position:fixed;top:0;bottom:0;right:0;width:min(560px,100%);
+  position:fixed;top:0;bottom:0;right:0;width:min(1180px,100%);
   background:var(--panel);border-left:1px solid var(--line);
   box-shadow:0 0 40px rgba(0,0,0,.25);
   transform:translateX(100%);transition:transform .25s;z-index:2000;
@@ -191,10 +191,33 @@ input.len{width:72px;padding:4px 6px;font-size:12.5px;text-align:center}
   justify-content:space-between;align-items:flex-start;gap:12px}
 #drawer > header h3{margin:0 0 3px;font-size:17px}
 #drawer > header p{margin:0;font-size:12.5px;color:var(--muted)}
-#dTools{padding:10px 18px;border-bottom:1px solid var(--line);display:flex;gap:10px;
+#dTools{padding:10px 18px 6px;border-bottom:none;display:flex;gap:10px;
   flex-wrap:wrap;align-items:end}
+#dTools2{padding:0 18px 10px;border-bottom:1px solid var(--line);display:flex;gap:7px;flex-wrap:wrap}
 #dTools label.f{min-width:120px;flex:1}
-#drawer .body{overflow:auto;padding:0 0 30px;flex:1}
+/* מתחת ל-900px טור אחד; מעליו המפה משמאל והנתונים מימין, כדי לראות
+   את שניהם בו-זמנית. */
+#dPanes{display:flex;flex:1;min-height:0}
+#dSide{display:none;flex:0 0 46%;border-left:1px solid var(--line);
+  flex-direction:column;min-width:0;
+  /* ב-RTL הפריט הראשון יושב מימין, ולכן דוחפים את המפה לסוף = לשמאל */
+  order:2}
+#dSide.on{display:flex}
+#dMap{flex:1;min-height:220px;background:var(--bg)}
+#dSideBar{padding:9px 12px;border-top:1px solid var(--line);display:flex;
+  gap:8px;align-items:center;flex-wrap:wrap;font-size:12.5px}
+#dSideBar b{font-variant-numeric:tabular-nums;min-width:5em}
+#dRouteList{max-height:150px;overflow:auto;border-top:1px solid var(--line);padding:8px 12px}
+#dRouteList label{display:flex;gap:7px;align-items:center;font-size:12.5px;padding:3px 0;cursor:pointer}
+#dRouteList .sw{width:14px;height:4px;border-radius:2px;flex:none}
+#drawer .body{overflow:auto;padding:0 0 30px;flex:1;min-width:0;order:1}
+@media(max-width:899px){
+  #dPanes{flex-direction:column}
+  #dSide{flex:0 0 auto;border-left:none;border-bottom:1px solid var(--line);order:0}
+  #dMap{min-height:260px}
+}
+.measure-lbl{background:var(--accent);color:#fff;border-radius:5px;padding:1px 6px;font-size:11px;
+  font-weight:700;white-space:nowrap}
 .close{border:none;background:transparent;padding:2px 6px;color:var(--muted)}
 .mingrp{border-bottom:1px solid var(--line)}
 .mingrp > .hd{display:flex;align-items:center;gap:9px;padding:9px 18px;font-weight:700;
@@ -218,12 +241,37 @@ input.len{width:72px;padding:4px 6px;font-size:12.5px;text-align:center}
   display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 .ttday > h4 small{color:var(--muted);font-weight:400}
 .ttgrid{display:flex;flex-wrap:wrap;gap:6px;padding:12px 14px}
+.tthours{padding:6px 14px 12px}
+.ttrow{display:flex;gap:10px;align-items:baseline;padding:4px 0;border-bottom:1px dashed var(--line)}
+.ttrow:last-child{border-bottom:none}
+.tth{font-weight:700;font-variant-numeric:tabular-nums;min-width:4.4em}
+.ttn{color:var(--muted);font-size:12px;min-width:2.2em;text-align:center}
+.ttmins{display:flex;flex-wrap:wrap;gap:5px;flex:1}
 .slot{font-variant-numeric:tabular-nums;border:1px solid var(--line);border-radius:6px;
   padding:3px 8px;font-size:12.5px;background:var(--bg)}
 .slot.dup{background:var(--a-bg);color:var(--a);border-color:currentColor;font-weight:700}
 .ctxbox{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px 11px;
-  margin-top:6px;font-size:12px;line-height:1.8}
+  margin:2px 18px 8px;font-size:12px;line-height:1.8}
 .ctxbox .now{color:var(--a);font-weight:700}
+.mingrp tr.ctxrow > td{padding:0;border-bottom:1px solid var(--line)}
+body.noctx .ctxrow{display:none}
+
+/* מחוון מיקום התחנה במסלול */
+.seqchip{display:inline-flex;align-items:center;gap:5px;border-radius:99px;padding:2px 9px;
+  font-size:11.5px;font-weight:700;cursor:help;position:relative;white-space:nowrap;color:#fff}
+.seqpop{position:absolute;bottom:calc(100% + 7px);inset-inline-end:0;background:var(--panel);
+  border:1px solid var(--line);border-radius:9px;box-shadow:var(--shadow);padding:9px 11px;
+  width:210px;display:none;z-index:5;color:var(--ink);font-weight:400;font-size:11.5px;
+  line-height:1.6;text-align:right;
+  /* אינפורמטיבי בלבד — אסור שיחסום לחיצות על מה שמתחתיו */
+  pointer-events:none}
+.seqchip:hover .seqpop,.seqchip:focus-within .seqpop{display:block}
+.seqaxis{position:relative;height:16px;margin:7px 0 3px}
+.seqaxis .track{position:absolute;inset-block:6px;inset-inline:0;height:4px;border-radius:2px;
+  background:linear-gradient(to left,#16a34a,#eab308,#f97316,#dc2626)}
+.seqaxis .mk{position:absolute;top:-3px;width:0;height:0;border-inline:5px solid transparent;
+  border-top:7px solid var(--ink);transform:translateX(50%)}
+.seqends{display:flex;justify-content:space-between;font-size:10.5px;color:var(--muted)}
 .legend{font-size:12px;color:var(--muted);margin-top:10px;line-height:1.7}
 .legend b{color:var(--ink)}
 footer{margin-top:28px;font-size:12.5px;color:var(--muted);text-align:center;line-height:1.8}
@@ -450,19 +498,28 @@ a{color:var(--accent)}
       <option value="time" selected>לפי שעת יציאה</option>
       <option value="load">לפי עומס (יורד)</option>
     </select></label>
-    <button id="dMeasureBtn" class="sm"><svg class="ic"><use href="#i-ruler"></use></svg> מדוד אורך תחנה</button>
   </div>
-  <div id="dMeasureWrap" class="hide">
-    <div id="dMeasure"></div>
-    <div id="dMeasureBar">
-      <b id="dMeasureVal">0 מ׳</b>
-      <span class="hint" id="dMeasureHint">לחץ על המפה כדי לסמן את קצות התחנה</span>
-      <button id="dMeasureSave" class="sm primary" disabled><svg class="ic"><use href="#i-check"></use></svg> שמור כאורך התחנה</button>
-      <button id="dMeasureClear" class="sm">נקה</button>
-      <button id="dMeasureClose" class="sm">סגור</button>
+  <div id="dTools2">
+    <button id="dCtxToggle" class="sm"><svg class="ic"><use href="#i-info"></use></svg> הסתר הקשר קו</button>
+    <button id="dMapToggle" class="sm"><svg class="ic"><use href="#i-map"></use></svg> הצג מפה</button>
+    <button id="dMeasureBtn" class="sm"><svg class="ic"><use href="#i-ruler"></use></svg> מדוד אורך</button>
+    <button id="dExportPng" class="sm"><svg class="ic"><use href="#i-download"></use></svg> תמונה</button>
+    <button id="dExportCsv" class="sm"><svg class="ic"><use href="#i-download"></use></svg> CSV</button>
+  </div>
+  <div id="dPanes">
+    <div id="dSide">
+      <div id="dMap"></div>
+      <div id="dSideBar">
+        <span id="dSideMode">מיקום התחנה</span>
+        <b id="dMeasureVal"></b>
+        <span class="hint" id="dMeasureHint" style="margin:0"></span>
+        <button id="dMeasureSave" class="sm primary hide"><svg class="ic"><use href="#i-check"></use></svg> שמור אורך</button>
+        <button id="dMeasureClear" class="sm hide">נקה</button>
+      </div>
+      <div id="dRouteList" class="hide"></div>
     </div>
+    <div class="body" id="dBody"></div>
   </div>
-  <div class="body" id="dBody"></div>
 </aside>
 
 <script src="vendor/leaflet.js"></script>

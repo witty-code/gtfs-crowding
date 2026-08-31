@@ -432,6 +432,11 @@
         function () { checkAbort(abort); });
     }
     const nStops = stopId.length;
+    let nStationRecords = 0, nWithParent = 0;
+    for (let i = 0; i < nStops; i++) {
+      if (stopLocType[i] === 1) nStationRecords++;
+      if (stopParentRaw[i]) nWithParent++;
+    }
     checkAbort(abort);
 
     // unitOf: מיפוי רציף → יחידת ניתוח
@@ -595,6 +600,8 @@
       files: source.names.slice().sort(),
       nStops: nStops, nTrips: nTrips, nRoutes: routeShort.length, nServices: nServices,
       nParented: nParented,
+      nStationRecords: nStationRecords,
+      nWithParent: nWithParent,
       hasCalendar: source.has('calendar.txt'),
       hasCalendarDates: source.has('calendar_dates.txt'),
       nCalendarRows: nCalendarRows,
@@ -717,6 +724,8 @@
     const stTotal = source.sizeOf('stop_times.txt') || 0;
 
     const tripMinSeq = new Int32Array(nTrips).fill(0x7fffffff);
+    const tripMaxSeq = new Int32Array(nTrips).fill(-1);
+    const tripNStops = new Int32Array(nTrips);
     const tripOriginStop = new Int32Array(nTrips).fill(-1);
     const tripOriginTime = new Int32Array(nTrips).fill(-1);
 
@@ -754,6 +763,8 @@
           tripOriginStop[ti] = si;
           tripOriginTime[ti] = t;
         }
+        if (seq > tripMaxSeq[ti]) tripMaxSeq[ti] = seq;
+        tripNStops[ti]++;
 
         if (keepAll && !truncated) {
           if (activeSvc && feed.trips.service[ti] >= 0 && !activeSvc[feed.trips.service[ti]]) return;
@@ -786,7 +797,8 @@
 
     feed.mode = opts.mode;
     feed.keptRows = kept;
-    feed.origins = { stop: tripOriginStop, time: tripOriginTime, seq: tripMinSeq };
+    feed.origins = { stop: tripOriginStop, time: tripOriginTime, seq: tripMinSeq,
+      maxSeq: tripMaxSeq, nStops: tripNStops };
     feed.bucket = bucket;
     feed.loadedFilter = keepAll
       ? { day: (opts.day === undefined ? null : opts.day), date: opts.date || null,
@@ -1013,6 +1025,25 @@
     return byRoute;
   }
 
+  /**
+   * בונה אינדקס tripIdx → עצירות מסודרות, מתוך מה שנשמר ב-bucket.
+   * זמין רק במצב 'all'. המסלול עשוי להיקטע בקצוות של חלון השעות שנקרא.
+   */
+  function tripPathIndex(feed) {
+    const idx = new Map();
+    if (!feed.bucket) return idx;
+    feed.bucket.forEach(function (b) {
+      for (let i = 0; i < b.t.length; i++) {
+        const ti = b.tr[i];
+        let arr = idx.get(ti);
+        if (!arr) { arr = []; idx.set(ti, arr); }
+        arr.push({ st: b.st[i], sq: b.sq[i], t: b.t[i] });
+      }
+    });
+    idx.forEach(function (arr) { arr.sort(function (a, b) { return a.sq - b.sq; }); });
+    return idx;
+  }
+
   /** מרחק בין שתי נקודות במטרים (haversine). */
   function distMeters(a, b) {
     const R = 6371000, rad = Math.PI / 180;
@@ -1066,6 +1097,7 @@
     analyzeCompatible: analyzeCompatible,
     setUnit: setUnit,
     routeTimetable: routeTimetable,
+    tripPathIndex: tripPathIndex,
     distMeters: distMeters,
     fixOverflow: fixOverflow,
     dayOverlapWarning: dayOverlapWarning,
