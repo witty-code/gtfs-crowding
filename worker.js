@@ -5,6 +5,7 @@ let FEED = null;
 let SRC = null;
 let LAST = null;      // תוצאת הניתוח האחרונה (כולל מערכי הזמנים לפירוט)
 let CANCEL = false;
+let ROUTE_TT = null;   // מטמון לוח היציאות לכל קו, נבנה לפי דרישה
 
 function send(msg) { self.postMessage(msg); }
 const abort = function () { return CANCEL; };
@@ -31,6 +32,7 @@ function runAnalyze(opts) {
   send({ type: 'progress', text: 'מחשב עומס…', indeterminate: true });
   const res = GTFSCore.analyze(FEED, opts);
   LAST = { res: res, opts: opts };
+  ROUTE_TT = null;   // ההגדרות השתנו — המטמון כבר לא תקף
 
   const warnings = FEED.warnings.slice();
   if (!opts.date && opts.day !== null && opts.day !== undefined) {
@@ -56,6 +58,22 @@ function runAnalyze(opts) {
     },
     warnings: warnings
   });
+}
+
+/** לוח היציאות של כל קו ליום שלם, נבנה פעם אחת לכל ניתוח. */
+function routeTT() {
+  if (ROUTE_TT) return ROUTE_TT;
+  const o = LAST.opts;
+  ROUTE_TT = GTFSCore.routeTimetable(FEED, { day: o.day, date: o.date });
+  return ROUTE_TT;
+}
+
+function routeInfo(ri) {
+  return {
+    ri: ri,
+    line: FEED.routes.short[ri], long: FEED.routes.long[ri],
+    agency: FEED.routes.agency[ri], makat: FEED.routes.desc[ri]
+  };
 }
 
 self.onmessage = async function (e) {
@@ -96,12 +114,38 @@ self.onmessage = async function (e) {
       if (!LAST) throw new Error('אין תוצאות.');
       const r = LAST.res.allRows.find(function (x) { return x.u === msg.u; });
       if (!r) throw new Error('לא נמצאה תחנה.');
+      const tt = routeTT();
       const out = [];
       for (let i = 0; i < r._T.length; i++) {
         const ti = r._TR[i];
         const ri = FEED.trips.route[ti];
         const si = r._ST[i];
+        // הקשר: מתי הקו יוצא מתחנת המוצא לפני ואחרי הנסיעה הזו
+        let ctx = null;
+        if (ri >= 0) {
+          const dirs = tt.get(ri);
+          const arr = dirs && dirs.get(FEED.trips.dir[ti]);
+          if (arr && arr.length) {
+            let k = -1;
+            for (let z = 0; z < arr.length; z++) {
+              if (arr[z].trips.indexOf(ti) !== -1) { k = z; break; }
+            }
+            ctx = {
+              total: arr.reduce(function (a, g) { return a + g.count; }, 0),
+              slots: arr.length,
+              first: arr[0].t, last: arr[arr.length - 1].t,
+              idx: k,
+              prev: k > 0 ? arr[k - 1] : null,
+              here: k >= 0 ? arr[k] : null,
+              next: k >= 0 && k + 1 < arr.length ? arr[k + 1] : null,
+              prev2: k > 1 ? arr[k - 2] : null,
+              next2: k >= 0 && k + 2 < arr.length ? arr[k + 2] : null
+            };
+          }
+        }
         out.push({
+          seq: r._SQ[i],
+          ctx: ctx,
           t: r._T[i],
           origin: !!r._OG[i],
           line: ri >= 0 ? FEED.routes.short[ri] : '',
@@ -118,6 +162,44 @@ self.onmessage = async function (e) {
         });
       }
       send({ type: 'detail', u: msg.u, meta: stopMeta(FEED, msg.u), rows: out, opts: LAST.opts });
+
+    } else if (msg.type === 'routes') {
+      if (!LAST) throw new Error('אין תוצאות.');
+      const tt = routeTT();
+      const list = [];
+      tt.forEach(function (dirs, ri) {
+        let total = 0, slots = 0, dup = 0;
+        dirs.forEach(function (arr) {
+          arr.forEach(function (g) { total += g.count; slots++; if (g.count > 1) dup++; });
+        });
+        const info = routeInfo(ri);
+        info.total = total; info.slots = slots; info.dup = dup;
+        info.dirs = Array.from(dirs.keys()).sort();
+        list.push(info);
+      });
+      list.sort(function (a, b) { return b.dup - a.dup || b.total - a.total; });
+      send({ type: 'routes', rows: list });
+
+    } else if (msg.type === 'timetable') {
+      if (!LAST) throw new Error('אין תוצאות.');
+      const dirs = routeTT().get(msg.ri);
+      if (!dirs) throw new Error('לא נמצא לוח זמנים לקו.');
+      const out = [];
+      Array.from(dirs.keys()).sort().forEach(function (d) {
+        out.push({
+          dir: d,
+          name: dirHeadsign(msg.ri, d),
+          origin: dirOrigin(msg.ri, d),
+          slots: dirs.get(d).map(function (g) { return { t: g.t, count: g.count }; })
+        });
+      });
+      send({ type: 'timetable', ri: msg.ri, info: routeInfo(msg.ri), dirs: out, opts: LAST.opts });
+
+    } else if (msg.type === 'exportRoutes') {
+      if (!LAST) throw new Error('אין תוצאות.');
+      send({ type: 'progress', text: 'בונה קובץ לוחות זמנים…', indeterminate: true });
+      send({ type: 'export', csv: buildRoutesCsv(msg.onlyDup, msg.maxCols),
+        name: 'gtfs-timetables-' + (LAST.opts.date || 'day' + LAST.opts.day) + '.csv' });
 
     } else if (msg.type === 'export') {
       if (!LAST) throw new Error('אין תוצאות לייצוא.');
@@ -161,10 +243,122 @@ self.onmessage = async function (e) {
           lns.join(' | '), tids.join(' | '),
           isNaN(m.lat) ? '' : m.lat, isNaN(m.lon) ? '' : m.lon].map(q).join(','));
       }
-      send({ type: 'export', csv: '﻿' + lines.join('\r\n') });
+      send({ type: 'export', csv: '﻿' + lines.join('\r\n'),
+        name: 'gtfs-overcrowding-' + (LAST.opts.date || 'day' + LAST.opts.day) + '.csv' });
     }
   } catch (err) {
     if (err && err.aborted) send({ type: 'aborted' });
     else send({ type: 'error', message: err && err.message ? err.message : String(err) });
   }
 };
+
+/* ==================================================================== */
+/* עזרי לוחות זמנים                                                     */
+/* ==================================================================== */
+
+/** שם היעד הנפוץ ביותר בכיוון נתון — משמש כשם הכיוון בייצוא. */
+function dirHeadsign(ri, d) {
+  const tt = routeTT().get(ri);
+  const arr = tt && tt.get(d);
+  if (!arr) return '';
+  const count = new Map();
+  for (const g of arr) {
+    for (const ti of g.trips) {
+      const h = (FEED.trips.headsign[ti] || '').split('_')[0].trim();
+      if (h) count.set(h, (count.get(h) || 0) + 1);
+    }
+  }
+  let best = '', n = 0;
+  count.forEach(function (v, k) { if (v > n) { n = v; best = k; } });
+  if (best) return best;
+  // נפילה אחורה: החצי המתאים של route_long_name
+  const parts = (FEED.routes.long[ri] || '').split(/[-–]/);
+  return (parts[d === 0 ? 0 : parts.length - 1] || '').trim();
+}
+
+/** שם תחנת המוצא הנפוצה בכיוון נתון. */
+function dirOrigin(ri, d) {
+  const tt = routeTT().get(ri);
+  const arr = tt && tt.get(d);
+  if (!arr) return '';
+  const count = new Map();
+  for (const g of arr) {
+    for (const ti of g.trips) {
+      const si = FEED.origins.stop[ti];
+      if (si < 0) continue;
+      const nm = FEED.stops.name[si];
+      count.set(nm, (count.get(nm) || 0) + 1);
+    }
+  }
+  let best = '', n = 0;
+  count.forEach(function (v, k) { if (v > n) { n = v; best = k; } });
+  return best;
+}
+
+/**
+ * CSV של לוחות זמנים בפורמט Bulk Create של Canva.
+ * כל שורה = קו אחד. עמודות שעה נפרדות (Dir1_Time_1…) לצד עמודה מרוכזת
+ * אחת (Dir1_Times) לעיצובים שמשתמשים בתיבת טקסט אחת.
+ * שעה שיוצאים בה כמה אוטובוסים מסומנת ב-*X.
+ */
+function buildRoutesCsv(onlyDup, maxCols) {
+  maxCols = maxCols || 60;
+  const tt = routeTT();
+  const q = function (v) {
+    v = v === undefined || v === null ? '' : String(v);
+    return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
+  };
+  const slotText = function (g) {
+    return GTFSCore.fmtTime(g.t) + (g.count > 1 ? '*' + g.count : '');
+  };
+
+  // כמה עמודות שעה באמת צריך
+  let need = 0;
+  const rows = [];
+  tt.forEach(function (dirs, ri) {
+    const ds = Array.from(dirs.keys()).sort();
+    const d1 = dirs.get(ds[0]) || [];
+    const d2 = ds.length > 1 ? (dirs.get(ds[1]) || []) : [];
+    const dup = d1.concat(d2).some(function (g) { return g.count > 1; });
+    if (onlyDup && !dup) return;
+    need = Math.max(need, d1.length, d2.length);
+    rows.push({ ri: ri, ds: ds, d1: d1, d2: d2, dup: dup });
+  });
+  need = Math.min(need, maxCols);
+
+  const head = ['Line_Number', 'Destination', 'Direction_1_Name', 'Direction_2_Name',
+    'Agency', 'Makat', 'Service_Date', 'Dir1_Count', 'Dir2_Count',
+    'Dir1_Times', 'Dir2_Times'];
+  for (let i = 1; i <= need; i++) head.push('Dir1_Time_' + i);
+  for (let i = 1; i <= need; i++) head.push('Dir2_Time_' + i);
+
+  const when = LAST.opts.date ? GTFSCore.fmtDateHe(LAST.opts.date)
+    : 'יום ' + GTFSCore.DAY_HE[LAST.opts.day];
+  const out = [head.join(',')];
+
+  rows.sort(function (a, b) {
+    const la = parseInt(FEED.routes.short[a.ri], 10), lb = parseInt(FEED.routes.short[b.ri], 10);
+    if (!isNaN(la) && !isNaN(lb) && la !== lb) return la - lb;
+    return String(FEED.routes.short[a.ri]).localeCompare(String(FEED.routes.short[b.ri]), 'he');
+  });
+
+  for (const r of rows) {
+    const t1 = r.d1.map(slotText), t2 = r.d2.map(slotText);
+    const line = [
+      FEED.routes.short[r.ri],
+      FEED.routes.long[r.ri],
+      dirHeadsign(r.ri, r.ds[0]),
+      r.ds.length > 1 ? dirHeadsign(r.ri, r.ds[1]) : '',
+      FEED.routes.agency[r.ri],
+      FEED.routes.desc[r.ri],
+      when,
+      r.d1.reduce(function (a, g) { return a + g.count; }, 0),
+      r.d2.reduce(function (a, g) { return a + g.count; }, 0),
+      t1.join(' '), t2.join(' ')
+    ];
+    for (let i = 0; i < need; i++) line.push(t1[i] || '');
+    for (let i = 0; i < need; i++) line.push(t2[i] || '');
+    out.push(line.map(q).join(','));
+  }
+  return '﻿' + out.join('\r\n');
+}

@@ -134,23 +134,51 @@
   /* CSV                                                                  */
   /* ==================================================================== */
 
+  /**
+   * פיצול שורת CSV, סלחני כלפי הפיד הישראלי.
+   *
+   * הכלל הקריטי: מרכאה נחשבת פותחת שדה מצוטט רק אם היא התו הראשון בשדה.
+   * בפיד של משרד התחבורה יש שמות תחנה עם גרשיים שאינם מצוטטים כלל
+   * (למשל  ת.רק"ל הקוממיות/דרך בגין ), ומנתח תמים היה בולע בגללן את
+   * שאר השורה לתוך שם התחנה ומאבד את הקואורדינטות.
+   */
   function splitCsv(line) {
     if (line.indexOf('"') === -1) return line.split(',');
     const out = [];
-    let cur = '';
-    let q = false;
-    for (let i = 0; i < line.length; i++) {
-      const ch = line[i];
-      if (q) {
-        if (ch === '"') {
-          if (line[i + 1] === '"') { cur += '"'; i++; } else { q = false; }
-        } else cur += ch;
-      } else if (ch === '"') q = true;
-      else if (ch === ',') { out.push(cur); cur = ''; }
-      else cur += ch;
+    const n = line.length;
+    let i = 0;
+    for (;;) {
+      let cur = '';
+      if (i < n && line.charCodeAt(i) === 34) {   // שדה מצוטט תקני
+        i++;
+        for (;;) {
+          const q = line.indexOf('"', i);
+          if (q === -1) { cur += line.slice(i); i = n; break; }
+          cur += line.slice(i, q);
+          if (line.charCodeAt(q + 1) === 34) { cur += '"'; i = q + 2; continue; }
+          i = q + 1;
+          break;
+        }
+      }
+      // שארית השדה עד הפסיק — מרכאות כאן הן תו רגיל לכל דבר
+      const c = line.indexOf(',', i);
+      if (c === -1) { out.push(cur + line.slice(i)); return out; }
+      out.push(cur + line.slice(i, c));
+      i = c + 1;
+      if (i === n) { out.push(''); return out; }
     }
-    out.push(cur);
-    return out;
+  }
+
+  /**
+   * אם שורה מכילה יותר שדות מהכותרת, ככל הנראה שדה טקסט חופשי הכיל פסיק
+   * בלי ציטוט. מאחים את העודף בחזרה לתוך העמודה החשודה (joinIdx).
+   */
+  function fixOverflow(r, nCols, joinIdx) {
+    if (joinIdx < 0 || r.length <= nCols) return r;
+    const extra = r.length - nCols;
+    return r.slice(0, joinIdx)
+      .concat([r.slice(joinIdx, joinIdx + extra + 1).join(',')])
+      .concat(r.slice(joinIdx + extra + 1));
   }
 
   /**
@@ -241,8 +269,15 @@
     return p(h) + ':' + p(m) + (s ? ':' + p(s) : '');
   }
 
-  /** מפרק stop_desc בסגנון משרד התחבורה: "רחוב: X עיר: Y רציף: Z קומה: W" */
-  const DESC_LABELS = [['רחוב:', 'street'], ['עיר:', 'city'], ['רציף:', 'platform'], ['קומה:', 'floor']];
+  /**
+   * מפרק stop_desc בסגנון משרד התחבורה: "רחוב: X עיר: Y רציף: Z קומה: W".
+   * תומך גם בגרסה האנגלית של הפיד ("Street: … City: … Platform: … Floor: …")
+   * וגם כשהשדות מופרדים בפסיקים.
+   */
+  const DESC_LABELS = [
+    ['רחוב:', 'street'], ['עיר:', 'city'], ['רציף:', 'platform'], ['קומה:', 'floor'],
+    ['Street:', 'street'], ['City:', 'city'], ['Platform:', 'platform'], ['Floor:', 'floor']
+  ];
   function parseStopDesc(d) {
     const res = { street: '', city: '', platform: '', floor: '' };
     if (!d) return res;
@@ -256,7 +291,9 @@
     for (let j = 0; j < found.length; j++) {
       const s = found[j].i + found[j].len;
       const e = j + 1 < found.length ? found[j + 1].i : d.length;
-      res[found[j].key] = d.slice(s, e).trim();
+      let v = d.slice(s, e).trim();
+      if (v.charCodeAt(v.length - 1) === 44) v = v.slice(0, -1).trim(); // פסיק מפריד
+      if (!res[found[j].key]) res[found[j].key] = v;
     }
     return res;
   }
@@ -352,10 +389,13 @@
     const stopIndex = new Map();
     const stopId = [], stopCode = [], stopName = [], stopCity = [], stopStreet = [],
       stopPlatform = [], stopLat = [], stopLon = [], stopParentRaw = [], stopLocType = [];
+    let nStopCols = 0, nStopsRepaired = 0, nStopsBadCoord = 0;
+    const badSamples = [];
     {
       let c = null;
       await streamCsv(await source.open('stops.txt'),
         function (h) {
+          nStopCols = h.length;
           c = {
             id: colIndex(h, ['stop_id']), code: colIndex(h, ['stop_code']),
             name: colIndex(h, ['stop_name']), desc: colIndex(h, ['stop_desc']),
@@ -365,6 +405,12 @@
           };
         },
         function (r) {
+          if (r.length > nStopCols) {
+            // שדה טקסט עם פסיק שלא צוטט — מאחים אותו בחזרה לתוך stop_desc
+            if (nStopsRepaired < 5) badSamples.push(r.join(',').slice(0, 200));
+            r = fixOverflow(r, nStopCols, c.desc);
+            nStopsRepaired++;
+          }
           const id = r[c.id];
           if (id === undefined || id === '') return;
           const d = parseStopDesc(c.desc >= 0 ? r[c.desc] : '');
@@ -375,8 +421,11 @@
           stopCity.push(d.city);
           stopStreet.push(d.street);
           stopPlatform.push((c.plat >= 0 && r[c.plat]) ? r[c.plat] : d.platform);
-          stopLat.push(c.lat >= 0 ? parseFloat(r[c.lat]) : NaN);
-          stopLon.push(c.lon >= 0 ? parseFloat(r[c.lon]) : NaN);
+          const la = c.lat >= 0 ? parseFloat(r[c.lat]) : NaN;
+          const lo = c.lon >= 0 ? parseFloat(r[c.lon]) : NaN;
+          if (isNaN(la) || isNaN(lo)) nStopsBadCoord++;
+          stopLat.push(la);
+          stopLon.push(lo);
           stopParentRaw.push(c.parent >= 0 ? (r[c.parent] || '') : '');
           stopLocType.push(c.loc >= 0 ? (parseInt(r[c.loc], 10) || 0) : 0);
         },
@@ -553,8 +602,19 @@
       nCalendarDateRows: nCalendarDateRows,
       nServicesOnlyInDates: nAddedFromDates,
       stopTimesBytes: source.sizeOf('stop_times.txt') || 0,
+      nStopsRepaired: nStopsRepaired,
+      nStopsBadCoord: nStopsBadCoord,
+      malformedSamples: badSamples,
       coverage: coverage
     };
+    if (nStopsRepaired) {
+      warn.push(nStopsRepaired.toLocaleString('he-IL') + ' שורות ב-stops.txt הכילו פסיק בשדה ' +
+        'לא מצוטט ואוחו אוטומטית. ראה "אבחון מלא" לדוגמאות.');
+    }
+    if (nStopsBadCoord) {
+      warn.push(nStopsBadCoord.toLocaleString('he-IL') + ' תחנות ללא קואורדינטות תקינות — ' +
+        'הן לא יופיעו על המפה.');
+    }
 
     // אזהרות מנחות
     if (nServices === 0) {
@@ -804,11 +864,11 @@
     const Wo = (opts.winOrigin || 0) * 60;
     const Wm = (opts.winMid || 0) * 60;
 
-    const units = new Map(); // unitIdx → {t:[], tr:[], og:[], st:[]}
-    const push = function (u, t, tr, og, st) {
+    const units = new Map(); // unitIdx → {t:[], tr:[], og:[], st:[], sq:[]}
+    const push = function (u, t, tr, og, st, sq) {
       let b = units.get(u);
-      if (!b) { b = { t: [], tr: [], og: [], st: [] }; units.set(u, b); }
-      b.t.push(t); b.tr.push(tr); b.og.push(og); b.st.push(st);
+      if (!b) { b = { t: [], tr: [], og: [], st: [], sq: [] }; units.set(u, b); }
+      b.t.push(t); b.tr.push(tr); b.og.push(og); b.st.push(st); b.sq.push(sq);
     };
 
     if (feed.mode === 'all') {
@@ -818,7 +878,7 @@
           if (active && feed.trips.service[ti] >= 0 && !active[feed.trips.service[ti]]) continue;
           const t = b.t[i];
           if (t < lo || t > hi) continue;
-          push(u, t, ti, b.sq[i] === feed.origins.seq[ti] ? 1 : 0, b.st[i]);
+          push(u, t, ti, b.sq[i] === feed.origins.seq[ti] ? 1 : 0, b.st[i], b.sq[i]);
         }
       });
     } else {
@@ -829,7 +889,7 @@
         if (active && feed.trips.service[ti] >= 0 && !active[feed.trips.service[ti]]) continue;
         const t = ot[ti];
         if (t < lo || t > hi) continue;
-        push(feed.unitOfStop[si], t, ti, 1, si);
+        push(feed.unitOfStop[si], t, ti, 1, si, feed.origins.seq[ti]);
       }
     }
 
@@ -842,10 +902,11 @@
       const idx = new Array(n);
       for (let i = 0; i < n; i++) idx[i] = i;
       idx.sort(function (a, c2) { return b.t[a] - b.t[c2]; });
-      const T = new Int32Array(n), TR = new Int32Array(n), OG = new Uint8Array(n), ST = new Int32Array(n);
+      const T = new Int32Array(n), TR = new Int32Array(n), OG = new Uint8Array(n),
+        ST = new Int32Array(n), SQ = new Int32Array(n);
       for (let i = 0; i < n; i++) {
         const k = idx[i];
-        T[i] = b.t[k]; TR[i] = b.tr[k]; OG[i] = b.og[k]; ST[i] = b.st[k];
+        T[i] = b.t[k]; TR[i] = b.tr[k]; OG[i] = b.og[k]; ST[i] = b.st[k]; SQ[i] = b.sq[k];
       }
 
       // רמה א' — אותה דקה בדיוק
@@ -871,7 +932,7 @@
         maxExact: maxExact, exactAt: exactAt,
         winAll: winAll.max, winAllAt: winAll.at,
         winOrg: winOrg.max, winOrgAt: winOrg.at,
-        _T: T, _TR: TR, _OG: OG, _ST: ST
+        _T: T, _TR: TR, _OG: OG, _ST: ST, _SQ: SQ
       });
     });
 
@@ -908,6 +969,58 @@
       if (cnt > best) { best = cnt; at = T[i]; }
     }
     return { max: best, at: at };
+  }
+
+  /**
+   * לוח יציאות יומי לכל קו, מתחנת המוצא, לפי הסינון הנתון (יום שלם).
+   * מחזיר Map: routeIdx → Map(direction → [{ t, count, trips:[tripIdx] }])
+   * היציאות מקובצות לפי דקה, כך ש-count>1 = כמה אוטובוסים באותה שעה.
+   */
+  function routeTimetable(feed, opts) {
+    if (!feed.origins) return new Map();
+    const active = buildActiveServices(feed.services, opts);
+    const byRoute = new Map();
+    const os = feed.origins.stop, ot = feed.origins.time;
+    for (let ti = 0; ti < os.length; ti++) {
+      if (os[ti] < 0) continue;
+      if (active && feed.trips.service[ti] >= 0 && !active[feed.trips.service[ti]]) continue;
+      const ri = feed.trips.route[ti];
+      if (ri < 0) continue;
+      let dirs = byRoute.get(ri);
+      if (!dirs) { dirs = new Map(); byRoute.set(ri, dirs); }
+      const d = feed.trips.dir[ti];
+      let arr = dirs.get(d);
+      if (!arr) { arr = []; dirs.set(d, arr); }
+      arr.push({ t: ot[ti], ti: ti });
+    }
+    byRoute.forEach(function (dirs) {
+      dirs.forEach(function (arr, d) {
+        arr.sort(function (a, b) { return a.t - b.t; });
+        const grouped = [];
+        let i = 0;
+        while (i < arr.length) {
+          const m = Math.floor(arr[i].t / 60);
+          let j = i;
+          while (j < arr.length && Math.floor(arr[j].t / 60) === m) j++;
+          const trips = [];
+          for (let k = i; k < j; k++) trips.push(arr[k].ti);
+          grouped.push({ t: m * 60, count: j - i, trips: trips });
+          i = j;
+        }
+        dirs.set(d, grouped);
+      });
+    });
+    return byRoute;
+  }
+
+  /** מרחק בין שתי נקודות במטרים (haversine). */
+  function distMeters(a, b) {
+    const R = 6371000, rad = Math.PI / 180;
+    const dLat = (b[0] - a[0]) * rad, dLon = (b[1] - a[1]) * rad;
+    const la = a[0] * rad, lb = b[0] * rad;
+    const h = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos(la) * Math.cos(lb) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
   }
 
   /**
@@ -952,6 +1065,9 @@
     analyze: analyze,
     analyzeCompatible: analyzeCompatible,
     setUnit: setUnit,
+    routeTimetable: routeTimetable,
+    distMeters: distMeters,
+    fixOverflow: fixOverflow,
     dayOverlapWarning: dayOverlapWarning,
     peakWindow: peakWindow,
     buildActiveServices: buildActiveServices,

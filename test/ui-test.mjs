@@ -263,6 +263,194 @@ if (!(await page.isHidden('#stop'))) {
   ok('הריצה הסתיימה לפני שהספקנו לעצור — לא ניתן לבדוק עצירה', false);
 }
 
+/* ---------- שלב 9ב: תיקוני הגרסה הזו ---------- */
+console.log('\n=== מיון הפירוט, הקשר הקו ומספר תחנה במסלול ===');
+await page.setInputFiles('#file', path.join(root, 'test/sample-gtfs.zip'));
+await page.waitForSelector('#fileInfo.ok');
+await page.click('#scan');
+await page.waitForSelector('#feedInfo.on', { timeout: 120000 });
+await page.selectOption('#mode', 'all');
+await page.selectOption('#fromHour', '6');
+await page.selectOption('#toHour', '9');
+await page.click('#run');
+await page.waitForFunction(() => document.querySelectorAll('#tbody tr').length > 0, { timeout: 180000 });
+await page.click('#tbody tr:first-child td.name');
+await page.waitForSelector('#drawer.open');
+await page.waitForTimeout(400);
+
+await page.selectOption('#dOnly', 'all');
+await page.waitForTimeout(250);
+const byTime = await page.$$eval('.mingrp .hd .t', e => e.map(x => x.textContent));
+await page.selectOption('#dSort', 'load');
+await page.waitForTimeout(250);
+const byLoad = await page.$$eval('.mingrp', els => els.map(e => e.querySelectorAll('tbody tr').length));
+console.log('  לפי שעה: ' + byTime.slice(0, 5).join(', '));
+console.log('  לפי עומס: ' + byLoad.slice(0, 8).join(', '));
+ok('מיון לפי שעה עולה', byTime.every((v, i) => i === 0 || v >= byTime[i - 1]));
+ok('מיון לפי עומס יורד', byLoad.every((v, i) => i === 0 || v <= byLoad[i - 1]));
+await page.selectOption('#dSort', 'time');
+await page.waitForTimeout(200);
+
+const ctx = await page.$$eval('.ctxbox', els => els.map(e => e.innerText.replace(/\s+/g, ' ').trim()));
+console.log('  הקשר קו לדוגמה: ' + (ctx[0] || '(אין)').slice(0, 150));
+ok('מוצג הקשר של הקו לאורך היום', ctx.length > 0 && /יציאות מהמוצא/.test(ctx[0]));
+ok('מוצגים מרווחים לפני ואחרי', ctx.some(c => /מרווחים/.test(c)));
+await page.click('#dClose');
+await page.waitForTimeout(300);
+// בוחרים תחנה שיש בה באמת יציאות ביניים
+await page.selectOption('#typeFilter', 'mid');
+await page.waitForTimeout(250);
+const nMid = await page.$$eval('#tbody tr[data-u]', e => e.length);
+console.log('  תחנות ביניים בטבלה: ' + nMid);
+await page.click('#tbody tr:first-child td.name');
+await page.waitForSelector('#drawer.open');
+await page.waitForTimeout(500);
+await page.selectOption('#dType', 'all');   // שלב קודם השאיר "מוצא בלבד"
+await page.selectOption('#dOnly', 'all');
+await page.waitForTimeout(300);
+const midTags = await page.$$eval('.mingrp .tag.n', els =>
+  els.map(e => e.textContent).filter(t => /^תחנה \d+$/.test(t)));
+const midCtx = await page.$$eval('.ctxbox', els =>
+  els.map(e => e.innerText).filter(t => /תחנת ביניים מס/.test(t)));
+console.log('  תגיות תחנת ביניים: ' + midTags.slice(0, 4).join(', '));
+console.log('  הסבר ביניים: ' + (midCtx[0] || '(אין)').replace(/\s+/g, ' ').slice(-90));
+ok('תחנת ביניים מציגה את מספרה במסלול', midTags.length > 0);
+ok('מוסבר שמספר תחנה גבוה = הגעה משוערת יותר', midCtx.length > 0);
+await page.click('#dClose');
+await page.waitForTimeout(250);
+await page.selectOption('#typeFilter', 'all');
+await page.waitForTimeout(250);
+await page.click('#tbody tr:first-child td.name');
+await page.waitForSelector('#drawer.open');
+await page.waitForTimeout(400);
+
+console.log('\n=== כלי מדידת אורך תחנה ===');
+await page.click('#dMeasureBtn');
+await page.waitForTimeout(900);
+ok('פאנל המדידה נפתח', await page.isVisible('#dMeasure'));
+const box = await page.$eval('#dMeasure', e => { const r = e.getBoundingClientRect();
+  return { x: r.x, y: r.y, w: r.width, h: r.height }; });
+await page.mouse.click(box.x + box.w * 0.42, box.y + box.h * 0.5);
+await page.waitForTimeout(250);
+await page.mouse.click(box.x + box.w * 0.58, box.y + box.h * 0.5);
+await page.waitForTimeout(350);
+const measured = await page.textContent('#dMeasureVal');
+console.log('  נמדד: ' + measured);
+ok('המדידה מחזירה אורך במטרים', /^[\d.]+ מ׳$/.test(measured) && parseFloat(measured) > 0);
+ok('כפתור השמירה נדלק', await page.isEnabled('#dMeasureSave'));
+const stopBeingMeasured = await page.$eval('#tbody tr:first-child input.len', e => e.dataset.stop);
+await page.click('#dMeasureSave');
+await page.waitForTimeout(400);
+const savedLen = await page.$$eval('#tbody input.len', (els, sid) => {
+  const el = els.find(x => x.dataset.stop === sid); return el ? el.value : null;
+}, stopBeingMeasured);
+console.log('  נשמר בטבלה: ' + savedLen);
+ok('האורך שנמדד נשמר על התחנה', savedLen !== null && parseFloat(savedLen) === parseFloat(measured));
+const persisted = await page.evaluate(s2 =>
+  JSON.parse(localStorage.getItem('gtfsCrowdLens') || '{}')[s2], stopBeingMeasured);
+ok('האורך נשמר בזיכרון הדפדפן', typeof persisted === 'number' && persisted > 0);
+await page.screenshot({ path: path.join(root, 'test/screenshot-measure.png') });
+await page.click('#dClose');
+await page.waitForTimeout(300);
+
+console.log('\n=== נגישות: aria-hidden ===');
+const a11y = await page.evaluate(() => {
+  const d = document.getElementById('drawer');
+  return { hasAria: d.hasAttribute('aria-hidden'), inert: d.inert === true,
+    focusInside: d.contains(document.activeElement) };
+});
+console.log('  ' + JSON.stringify(a11y));
+ok('אין aria-hidden על המגירה', !a11y.hasAria);
+ok('המגירה מסומנת inert בסגירה', a11y.inert);
+ok('הפוקוס יצא מהמגירה', !a11y.focusInside);
+
+console.log('\n=== מפה: המגירה מעל, ורדיוס לפי זום ===');
+await page.click('#tabMap');
+await page.waitForTimeout(1000);
+const zTop = await page.evaluate(() => {
+  const d = getComputedStyle(document.getElementById('drawer')).zIndex;
+  const panes = Array.from(document.querySelectorAll('.leaflet-pane, .leaflet-control'))
+    .map(e => parseInt(getComputedStyle(e).zIndex, 10)).filter(n => !isNaN(n));
+  return { drawer: parseInt(d, 10), maxLeaflet: Math.max.apply(null, panes.concat([0])) };
+});
+console.log('  z-index מגירה=' + zTop.drawer + ' מול Leaflet=' + zTop.maxLeaflet);
+ok('המגירה מעל כל שכבות המפה', zTop.drawer > zTop.maxLeaflet);
+
+const painted = async () => page.evaluate(() => {
+  const c = document.querySelector('#map canvas');
+  if (!c) return -1;
+  const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+  let n = 0; for (let i = 3; i < d.length; i += 4) if (d[i] > 10) n++;
+  return n;
+});
+const paintedBefore = await painted();
+// מרחיקים דרך פקד הזום של Leaflet — לחיצת מקלדת לא בהכרח מגיעה למפה
+await page.click('.leaflet-control-zoom-out');
+await page.waitForTimeout(700);
+await page.click('.leaflet-control-zoom-out');
+await page.waitForTimeout(1100);
+const paintedAfter = await painted();
+console.log('  פיקסלים צבועים לפני הרחקה: ' + paintedBefore + ' אחרי: ' + paintedAfter);
+ok('העיגולים מצטמצמים בהרחקה (מפת חום)',
+  paintedBefore > 0 && paintedAfter > 0 && paintedAfter < paintedBefore);
+
+console.log('\n=== לשונית לוחות זמנים וייצוא Canva ===');
+await page.click('#tabRoutes');
+await page.waitForFunction(() => document.querySelectorAll('#rBody tr').length > 0, { timeout: 60000 });
+const rRows = await page.$$eval('#rBody tr', els => els.slice(0, 3).map(t =>
+  Array.from(t.querySelectorAll('td')).map(td => td.innerText.replace(/\n/g, ' ')).join(' | ')));
+console.log('  ' + rRows.join('\n  '));
+ok('רשימת הקווים נבנתה', rRows.length > 0);
+await page.click('#rBody tr:first-child');
+await page.waitForSelector('#ttPanel:not(.hide)', { timeout: 20000 });
+const slots = await page.$$eval('#ttPanel .slot', els => els.map(e => e.textContent.trim()));
+const dupSlots = await page.$$eval('#ttPanel .slot.dup', els => els.map(e => e.textContent.trim()));
+console.log('  שעות בלוח: ' + slots.length + ' · כפולות: ' + dupSlots.slice(0, 4).join(', '));
+ok('לוח הזמנים מציג שעות', slots.length > 0);
+ok('שעות עם יותר מאוטובוס אחד מסומנות ב-×N', dupSlots.every(t => /×\d+/.test(t)));
+await page.screenshot({ path: path.join(root, 'test/screenshot-routes.png') });
+
+const dl2 = page.waitForEvent('download', { timeout: 40000 });
+await page.click('#exportRoutes');
+const download2 = await dl2;
+let csv2 = '';
+for await (const c of await download2.createReadStream()) csv2 += c;
+const l2 = csv2.split('\r\n');
+console.log('  קובץ: ' + download2.suggestedFilename() + ' · ' + (l2.length - 1) + ' קווים');
+console.log('  כותרת: ' + l2[0].slice(0, 150));
+console.log('  שורה 1: ' + l2[1].slice(0, 150));
+ok('CSV לוחות זמנים נוצר', l2.length > 1);
+ok('כותרות Bulk Create קיימות',
+  ['Line_Number', 'Destination', 'Direction_1_Name', 'Direction_2_Name'].every(h => l2[0].includes(h)));
+ok('יש עמודות שעה ממוספרות', /Dir1_Time_1/.test(l2[0]) && /Dir2_Time_1/.test(l2[0]));
+ok('יש גם עמודה מרוכזת אחת', l2[0].includes('Dir1_Times'));
+ok('יציאות כפולות מסומנות ב-*X', /\*\d/.test(csv2));
+ok('CSV מכיל BOM', csv2.charCodeAt(0) === 0xfeff);
+
+console.log('\n=== יישור שורת ההתקדמות ===');
+const progAlign = await page.evaluate(() => {
+  document.getElementById('progress').classList.add('on');
+  const p = document.getElementById('progText');
+  p.innerHTML = '<b>קורא</b><span class="s-pct">7%</span>' +
+    '<span class="s-rows"><span class="num">1,000 / ~9,000,000</span> שורות</span>' +
+    '<span class="s-bytes"><span class="num">0.05 / 1.99 GB</span></span>';
+  const a = document.querySelector('#progText .s-bytes').getBoundingClientRect();
+  p.querySelector('.s-bytes .num').textContent = '1.27 / 1.99 GB';
+  const b = document.querySelector('#progText .s-bytes').getBoundingClientRect();
+  p.innerHTML = '';
+  document.getElementById('progress').classList.remove('on');
+  return { w1: Math.round(a.width), w2: Math.round(b.width), x1: Math.round(a.x), x2: Math.round(b.x) };
+});
+console.log('  משבצת הנפח: ' + JSON.stringify(progAlign));
+ok('משבצת הנפח נמדדה בפועל', progAlign.w1 > 40);
+ok('משבצת הנפח שומרת רוחב קבוע', progAlign.w1 === progAlign.w2);
+ok('המשבצת לא זזה בין עדכונים', progAlign.x1 === progAlign.x2);
+
+console.log('\n=== כתובת ההורדה הרשמית ===');
+const motLink = await page.$eval('a[href*="gtfs.mot.gov.il"]', e => e.href).catch(() => null);
+console.log('  ' + motLink);
+ok('מוצגת כתובת ההורדה של משרד התחבורה', motLink === 'https://gtfs.mot.gov.il/gtfsfiles/');
+
 /* ---------- שלב 10: הרצה מ-file:// ---------- */
 console.log('\n=== אזהרת file:// ===');
 const p2 = await browser.newPage();

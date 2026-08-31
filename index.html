@@ -91,9 +91,17 @@ button.sm{padding:5px 10px;font-size:12.5px}
 .bar > i{display:block;height:100%;width:0;background:var(--accent);transition:width .25s;border-radius:99px}
 .bar.indet > i{width:35% !important;animation:slide 1.1s ease-in-out infinite}
 @keyframes slide{0%{margin-inline-start:-35%}100%{margin-inline-start:100%}}
-#progText{font-size:13px;color:var(--muted);margin-top:8px;display:flex;gap:14px;flex-wrap:wrap;
+#progText{font-size:13px;color:var(--muted);margin-top:8px;display:flex;gap:6px 18px;flex-wrap:wrap;
   align-items:center;font-variant-numeric:tabular-nums}
-#progText b{color:var(--ink);font-weight:600}
+#progText b{color:var(--ink);font-weight:600;min-width:13em}
+/* משבצות ברוחב קבוע — אחרת המספרים קופצים בכל עדכון והעין לא מצליחה לעקוב */
+#progText span{display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
+#progText .s-pct{min-width:3.2em;justify-content:flex-end;color:var(--accent);font-weight:700}
+#progText .s-rows{min-width:19em}
+#progText .s-bytes{min-width:10.5em}
+#progText .s-eta{min-width:9em}
+#progText .s-kept{min-width:11em}
+#progText .num{display:inline-block;text-align:left;direction:ltr}
 
 /* התראות */
 .note{border-radius:9px;padding:10px 13px;font-size:13.5px;margin-top:10px;border:1px solid transparent;
@@ -168,14 +176,14 @@ input.len{width:72px;padding:4px 6px;font-size:12.5px;text-align:center}
 .leaflet-popup-content b{font-size:14px}
 
 /* מגירת פירוט */
-#backdrop{position:fixed;inset:0;background:rgba(10,14,20,.45);z-index:49;
+#backdrop{position:fixed;inset:0;background:rgba(10,14,20,.45);z-index:1999;
   opacity:0;pointer-events:none;transition:opacity .25s}
 #backdrop.open{opacity:1;pointer-events:auto}
 #drawer{
   position:fixed;top:0;bottom:0;right:0;width:min(560px,100%);
   background:var(--panel);border-left:1px solid var(--line);
   box-shadow:0 0 40px rgba(0,0,0,.25);
-  transform:translateX(100%);transition:transform .25s;z-index:50;
+  transform:translateX(100%);transition:transform .25s;z-index:2000;
   display:flex;flex-direction:column;visibility:hidden;
 }
 #drawer.open{transform:none;visibility:visible}
@@ -199,6 +207,23 @@ input.len{width:72px;padding:4px 6px;font-size:12.5px;text-align:center}
 .mingrp tr:not(:last-child) td{border-bottom:1px solid var(--line)}
 .tid{font-family:ui-monospace,Consolas,monospace;font-size:11px;color:var(--muted);direction:ltr;
   display:inline-block}
+#dMeasureWrap{border-bottom:1px solid var(--line)}
+#dMeasure{height:300px;background:var(--bg)}
+#dMeasureBar{display:flex;gap:9px;align-items:center;flex-wrap:wrap;padding:10px 18px}
+#dMeasureBar b{font-size:18px;font-variant-numeric:tabular-nums;min-width:5.5em}
+.measure-lbl{background:var(--accent);color:#fff;border-radius:5px;padding:1px 6px;font-size:11px;
+  font-weight:700;white-space:nowrap}
+.ttday{margin-top:14px;border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.ttday > h4{margin:0;padding:10px 14px;background:var(--bg);font-size:14px;
+  display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.ttday > h4 small{color:var(--muted);font-weight:400}
+.ttgrid{display:flex;flex-wrap:wrap;gap:6px;padding:12px 14px}
+.slot{font-variant-numeric:tabular-nums;border:1px solid var(--line);border-radius:6px;
+  padding:3px 8px;font-size:12.5px;background:var(--bg)}
+.slot.dup{background:var(--a-bg);color:var(--a);border-color:currentColor;font-weight:700}
+.ctxbox{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px 11px;
+  margin-top:6px;font-size:12px;line-height:1.8}
+.ctxbox .now{color:var(--a);font-weight:700}
 .legend{font-size:12px;color:var(--muted);margin-top:10px;line-height:1.7}
 .legend b{color:var(--ink)}
 footer{margin-top:28px;font-size:12.5px;color:var(--muted);text-align:center;line-height:1.8}
@@ -234,6 +259,14 @@ a{color:var(--accent)}
   </div>
   <input type="file" id="file" multiple accept=".zip,.txt" class="hide">
   <div id="fileInfo"></div>
+  <div class="note info" style="margin-top:12px">
+    <svg class="ic lg"><use href="#i-info"></use></svg>
+    <div>אפשר להוריד פיד עדכני מהשרת הרשמי של משרד התחבורה:
+      <a href="https://gtfs.mot.gov.il/gtfsfiles/" target="_blank" rel="noopener">gtfs.mot.gov.il/gtfsfiles<svg class="ic" style="margin-inline-start:4px"><use href="#i-external-link"></use></svg></a><br>
+      <code dir="ltr">israel-public-transportation.zip</code> — הפיד המלא ·
+      <code dir="ltr">Gtfs_10_days.zip</code> — עשרה ימים קדימה.
+      בשני המקרים בחר תאריך מתוך הרשימה שהכלי יזהה, ולא יום בשבוע.</div>
+  </div>
   <div class="row">
     <button id="scan" class="primary" disabled><svg class="ic"><use href="#i-search"></use></svg> סרוק את הפיד</button>
     <span class="hint">שלב מהיר שקורא את התחנות, הקווים ולוח השנה — בלי הקובץ הכבד.</span>
@@ -343,6 +376,7 @@ a{color:var(--accent)}
   <div class="tabs">
     <button id="tabTable" class="on"><svg class="ic"><use href="#i-table"></use></svg> טבלה</button>
     <button id="tabMap"><svg class="ic"><use href="#i-map"></use></svg> מפה</button>
+    <button id="tabRoutes"><svg class="ic"><use href="#i-bus"></use></svg> לוחות זמנים</button>
   </div>
 
   <div class="tblwrap" id="tblWrap">
@@ -364,6 +398,26 @@ a{color:var(--accent)}
   </div>
 
   <div id="mapWrap"><div id="map"></div></div>
+
+  <div id="routesWrap" class="hide">
+    <div class="tools">
+      <label class="f" style="flex:1;min-width:180px"><span>חיפוש קו</span>
+        <input type="text" id="rq" placeholder="מספר קו, מפעיל או מק״ט…"></label>
+      <label class="f"><span>הצג</span>
+        <select id="rFilter">
+          <option value="dup" selected>רק קווים עם יציאות כפולות</option>
+          <option value="all">כל הקווים</option>
+        </select></label>
+      <button id="exportRoutes"><svg class="ic"><use href="#i-download"></use></svg> ייצוא ל-Canva</button>
+    </div>
+    <div class="tblwrap" style="max-height:52vh">
+      <table><thead><tr>
+        <th>קו</th><th>מפעיל</th><th>מסלול</th>
+        <th>יציאות</th><th>שעות</th><th>שעות כפולות</th>
+      </tr></thead><tbody id="rBody"></tbody></table>
+    </div>
+    <div id="ttPanel" class="hide"></div>
+  </div>
 
   <div class="legend">
     <b>רמה א׳</b> — יציאות שמתוכננות לאותה דקה בדיוק מאותו רציף. תכנון בלתי אפשרי.<br>
@@ -392,6 +446,21 @@ a{color:var(--accent)}
     <label class="f"><span>הצג</span><select id="dOnly">
       <option value="all">כל הדקות</option><option value="multi" selected>רק דקות עם חפיפה</option>
     </select></label>
+    <label class="f"><span>מיון</span><select id="dSort">
+      <option value="time" selected>לפי שעת יציאה</option>
+      <option value="load">לפי עומס (יורד)</option>
+    </select></label>
+    <button id="dMeasureBtn" class="sm"><svg class="ic"><use href="#i-ruler"></use></svg> מדוד אורך תחנה</button>
+  </div>
+  <div id="dMeasureWrap" class="hide">
+    <div id="dMeasure"></div>
+    <div id="dMeasureBar">
+      <b id="dMeasureVal">0 מ׳</b>
+      <span class="hint" id="dMeasureHint">לחץ על המפה כדי לסמן את קצות התחנה</span>
+      <button id="dMeasureSave" class="sm primary" disabled><svg class="ic"><use href="#i-check"></use></svg> שמור כאורך התחנה</button>
+      <button id="dMeasureClear" class="sm">נקה</button>
+      <button id="dMeasureClose" class="sm">סגור</button>
+    </div>
   </div>
   <div class="body" id="dBody"></div>
 </aside>
