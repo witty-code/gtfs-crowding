@@ -675,30 +675,97 @@ ok('אפשר לבחור קו בודד מתוך תוצאות חיפוש רחבו�
 await page.fill('#rq', '');
 await page.waitForTimeout(150);
 
-/* --- סדרת קווים + טווח תאריכים + לוח מודפס --- */
-console.log('\n=== סדרת קווים ולוח לפרסום ===');
+/* --- טווח מספרי קו כמסנן, סנכרון בין המסננים, ולוח לפרסום --- */
+console.log('\n=== סינון מורכב וסימון לייצוא ===');
+await page.click('#rClear');
 await page.click('#rSeriesClear');
-const lineList = await page.$$eval('#rBody tr[data-ri] td.num b',
-  els => els.map(e => e.textContent.trim()).filter(t => /^\d+$/.test(t)));
-const nums = Array.from(new Set(lineList.map(Number))).sort((a, b) => a - b);
-const seriesTxt = nums[0] + ', ' + nums[1] + '-' + nums[Math.min(3, nums.length - 1)];
-await page.fill('#rSeries', seriesTxt);
-await page.click('#rSeriesGo');
-const picked = await page.$$eval('#rBody tr.picked', els => els.length);
-const note = await page.textContent('#pubNote');
-console.log('  סדרה "' + seriesTxt + '" → ' + picked + ' שורות מסומנות · ' + note.trim());
-ok('סדרת קווים עם טווח מסמנת קווים', picked > 0);
-ok('הסינון עובר ל"כל הקווים" כדי שהסימון יהיה גלוי',
-  (await page.inputValue('#rFilter')) === 'all');
-ok('מוצג סיכום של מה שסומן', /סומנו/.test(note));
 
-/* קלט לא תקין לא מסמן ולא קורס */
+/* התקלה שדווחה: בחירת מפעיל ואז טווח קווים סימנה קווים של מפעילים אחרים */
+const agList = await page.$$eval('#rAgency option', els => els.map(e => e.value).filter(Boolean));
+await page.selectOption('#rAgency', agList[0]);
+await page.fill('#rSeries', '1-400');
+await page.waitForTimeout(150);
+const filtered = await page.$$eval('#rBody tr[data-ri]', els => els.map(t => ({
+  line: t.children[1].innerText.trim(), agency: t.children[2].innerText.trim()
+})));
+const otherAgency = filtered.filter(r => r.agency !== agList[0]).length;
+const outOfRange = filtered.filter(r => !(Number(r.line) >= 1 && Number(r.line) <= 400)).length;
+console.log('  מפעיל "' + agList[0] + '" + טווח 1-400 → ' + filtered.length + ' שורות');
+ok('הטווח והמפעיל מסננים יחד', filtered.length > 0 && otherAgency === 0 && outOfRange === 0,
+  'זר: ' + otherAgency + ' מחוץ לטווח: ' + outOfRange);
+
+await page.click('#rSelAll');
+await page.waitForTimeout(150);
+const selInfo = await page.evaluate(() => ({
+  status: document.getElementById('rStatus').innerText.replace(/\s+/g, ' '),
+  picked: document.querySelectorAll('#rBody tr.picked').length,
+  btn: document.getElementById('exportRoutes').innerText
+}));
+console.log('  ' + selInfo.status + ' · ' + selInfo.btn.trim());
+ok('"סימון כל המסוננים" מסמן בדיוק את השורות המוצגות',
+  selInfo.picked === filtered.length);
+ok('שורת המצב מדווחת מסוננים, מסומנים ולייצוא',
+  /מסוננים: \d+/.test(selInfo.status) && /מסומנים: \d+/.test(selInfo.status) &&
+  /לייצוא: \d+/.test(selInfo.status));
+ok('כפתור הייצוא מציג את אותו מספר',
+  selInfo.btn.indexOf('(' + filtered.length + ')') !== -1, selInfo.btn.trim());
+
+/* צמצום הסינון אחרי הסימון מצמצם גם את הייצוא: לא מייצאים מה שלא מוצג */
+await page.selectOption('#rAgency', '');
+await page.fill('#rSeries', '');
+await page.waitForTimeout(150);
+const allNow = await page.$$eval('#rBody tr[data-ri]', els => els.length);
+await page.selectOption('#rAgency', agList.length > 1 ? agList[1] : agList[0]);
+await page.waitForTimeout(150);
+const afterSwap = await page.evaluate(() => ({
+  rows: document.querySelectorAll('#rBody tr[data-ri]').length,
+  btn: document.getElementById('exportRoutes').innerText
+}));
+const nExp = parseInt((afterSwap.btn.match(/\((\d+)\)/) || [0, '0'])[1], 10);
+console.log('  לאחר החלפת מפעיל: ' + afterSwap.rows + ' שורות · לייצוא ' + nExp);
+ok('הייצוא לעולם אינו גדול ממספר השורות המוצגות', nExp <= afterSwap.rows);
+
+/* קלט לא תקין בשדה הטווח אינו מסנן ואינו קורס */
+await page.selectOption('#rAgency', '');
 await page.fill('#rSeries', 'שלום');
-await page.click('#rSeriesGo');
-ok('טקסט חופשי מטופל בלי קריסה', true);
+await page.waitForTimeout(150);
+const badHint = await page.evaluate(() => ({
+  rows: document.querySelectorAll('#rBody tr[data-ri]').length,
+  hint: document.getElementById('rFilterHint').innerText.replace(/\s+/g, ' '),
+  flagged: document.getElementById('rFilterHint').classList.contains('bad')
+}));
+console.log('  קלט לא מספרי: ' + badHint.hint.slice(0, 110));
+ok('טקסט לא מספרי בשדה הטווח מתעלם ואינו מסנן', badHint.rows === allNow,
+  badHint.rows + ' מול ' + allNow);
+ok('מוסבר למשתמש שהשדה מקבל מספרים בלבד',
+  badHint.flagged && /מספרים בלבד/.test(badHint.hint));
 
+/* מגבלת הלוח המודפס מוצגת ליד הכפתור, והכפתור מושבת */
+await page.fill('#rSeries', '');
+await page.click('#rClear');
+await page.click('#rSelAll');
+await page.waitForTimeout(150);
+const over = await page.evaluate(() => ({
+  disabled: document.getElementById('pubHtml').disabled,
+  note: document.getElementById('pubNote').innerText.replace(/\s+/g, ' '),
+  red: document.getElementById('pubNote').classList.contains('over')
+}));
+console.log('  ' + over.note);
+ok('מעל המגבלה הכפתור מושבת ולא "לא מגיב"', over.disabled === true);
+ok('הסיבה מוצגת ליד הכפתור ולא רק בראש הדף', /מוגבל ל-\d+/.test(over.note) && over.red);
+
+await page.click('#rSeriesClear');
+const seriesTxt = await page.$$eval('#rBody tr[data-ri] td.num b', els => {
+  const n = Array.from(new Set(els.map(e => Number(e.textContent.trim()))))
+    .filter(x => x > 0).sort((a, b) => a - b);
+  return n[0] + ', ' + n[1] + '-' + n[3];
+});
 await page.fill('#rSeries', seriesTxt);
-await page.click('#rSeriesGo');
+await page.waitForTimeout(150);
+const nSeries = await page.$$eval('#rBody tr[data-ri]', els => els.length);
+console.log('  טווח "' + seriesTxt + '" → ' + nSeries + ' שורות');
+ok('רשימה וטווח יחד מסננים', nSeries > 0);
+ok('הכפתור חזר לפעולה מתחת למגבלה', (await page.isDisabled('#pubHtml')) === false);
 
 const pubDates = await page.$$eval('#pubFrom option', els => els.map(e => e.value));
 console.log('  תאריכים בטווח: ' + pubDates.length + ' (' + pubDates[0] + '…' + pubDates[pubDates.length - 1] + ')');

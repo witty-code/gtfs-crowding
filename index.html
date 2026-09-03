@@ -280,6 +280,12 @@ th.chk input,td.chk input{cursor:pointer;width:16px;height:16px;accent-color:var
 /* חץ הכיוון מבודד לכיווניות כדי שלא יתהפך בתוך טקסט עברי */
 .arr{unicode-bidi:isolate;direction:ltr;color:var(--muted);padding:0 2px}
 .selnote{font-size:12px;color:var(--muted);align-self:center}
+#rSelBar{align-items:center}
+#rStatus{margin-inline-end:auto;font-size:13px}
+#rStatus b{color:var(--ink)}
+#pubNote{margin-top:8px}
+#pubNote.over{color:var(--a);font-weight:600}
+#rFilterHint.bad{color:var(--b);font-weight:600}
 .slot{font-variant-numeric:tabular-nums;border:1px solid var(--line);border-radius:6px;
   padding:3px 8px;font-size:12.5px;background:var(--bg)}
 .slot.dup{background:var(--a-bg);color:var(--a);border-color:currentColor;font-weight:700}
@@ -503,9 +509,11 @@ a{color:var(--accent)}
   <div id="mapWrap"><div id="map"></div></div>
 
   <div id="routesWrap" class="hide">
-    <div class="tools">
-      <label class="f" style="flex:1;min-width:180px"><span>חיפוש קו</span>
+    <div class="tools" id="rFilters">
+      <label class="f" style="flex:1;min-width:170px"><span>חיפוש חופשי</span>
         <input type="text" id="rq" placeholder="מספר קו, מפעיל או מק״ט…"></label>
+      <label class="f" style="min-width:170px"><span>טווח מספרי קו</span>
+        <input type="text" id="rSeries" placeholder="402, 404, 410-415"></label>
       <label class="f"><span>מפעיל</span>
         <select id="rAgency"><option value="">כל המפעילים</option></select></label>
       <label class="f"><span>הצג</span>
@@ -513,15 +521,16 @@ a{color:var(--accent)}
           <option value="all" selected>כל הקווים</option>
           <option value="dup">רק קווים עם יציאות כפולות</option>
         </select></label>
-      <button id="exportRoutes"><svg class="ic"><use href="#i-download"></use></svg> ייצוא ל-Canva</button>
+      <button id="rClear"><svg class="ic"><use href="#i-x"></use></svg> ניקוי סינון</button>
     </div>
+    <div class="hint" id="rFilterHint">ארבעת השדות פועלים יחד. טווח מספרי קו מקבל רשימה
+      מופרדת בפסיקים וטווחים עם מקף. הסימון לייצוא נעשה בטבלה שלמטה, על השורות המסוננות.</div>
 
-    <div class="tools" id="pubTools">
-      <label class="f" style="flex:1;min-width:200px"><span>סדרת קווים לסימון</span>
-        <input type="text" id="rSeries" placeholder="402, 404, 410-415">
-        <div class="hint">רשימה מופרדת בפסיקים, וטווחים עם מקף. מסמן בטבלה את כל הקווים התואמים.</div></label>
-      <button id="rSeriesGo"><svg class="ic"><use href="#i-check"></use></svg> סמן</button>
-      <button id="rSeriesClear"><svg class="ic"><use href="#i-x"></use></svg> נקה סימון</button>
+    <div class="tools" id="rSelBar">
+      <span id="rStatus" class="selnote"></span>
+      <button id="rSelAll" class="sm"><svg class="ic"><use href="#i-check"></use></svg> סימון כל המסוננים</button>
+      <button id="rSeriesClear" class="sm"><svg class="ic"><use href="#i-x"></use></svg> ניקוי הסימון</button>
+      <button id="exportRoutes"><svg class="ic"><use href="#i-download"></use></svg> ייצוא ל-Canva</button>
     </div>
 
     <div class="tools" id="pubRange">
@@ -529,8 +538,8 @@ a{color:var(--accent)}
       <label class="f"><span>עד תאריך</span><select id="pubTo"></select></label>
       <button id="pubCsv"><svg class="ic"><use href="#i-download"></use></svg> CSV ל-Canva (טווח)</button>
       <button id="pubHtml" class="primary"><svg class="ic"><use href="#i-file-text"></use></svg> לוח מודפס להפצה</button>
-      <span id="pubNote" class="selnote"></span>
     </div>
+    <div class="hint" id="pubNote"></div>
     <div class="tblwrap" style="max-height:52vh">
       <table id="rTable"><thead><tr>
         <th class="chk"><input type="checkbox" id="rAll" title="סימון או ניקוי של כל התוצאות המוצגות"></th>

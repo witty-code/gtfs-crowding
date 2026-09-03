@@ -1140,9 +1140,21 @@
 
   var rSortKey = 'dup', rSortAsc = false;
 
+  /* ארבעת השדות מסננים יחד. הסימון לייצוא נעשה על השורות המסוננות בלבד,
+     כדי שלא ייבחרו קווים שאינם מוצגים. */
   $('rq').addEventListener('input', renderRoutes);
+  $('rSeries').addEventListener('input', renderRoutes);
   $('rFilter').addEventListener('change', renderRoutes);
   $('rAgency').addEventListener('change', renderRoutes);
+  $('rClear').addEventListener('click', function () {
+    $('rq').value = ''; $('rSeries').value = '';
+    $('rAgency').value = ''; $('rFilter').value = 'all';
+    renderRoutes();
+  });
+  $('rSelAll').addEventListener('click', function () {
+    visibleRoutes().forEach(function (r) { RSEL.add(r.ri); });
+    renderRoutes();
+  });
 
   /* מיון רשימת הקווים לפי כל עמודה */
   document.querySelectorAll('#rTable th[data-rk]').forEach(function (th) {
@@ -1183,20 +1195,14 @@
       label: $('rq').value, only: shown.map(function (r) { return r.ri; }) });
   });
 
-  /* ---- סדרת קווים: "402, 404, 410-415" ---- */
-  $('rSeriesGo').addEventListener('click', applySeries);
-  $('rSeries').addEventListener('keydown', function (e) {
-    if (e.key === 'Enter') { e.preventDefault(); applySeries(); }
-  });
   $('rSeriesClear').addEventListener('click', function () {
     RSEL.clear(); renderRoutes();
-    $('pubNote').textContent = '';
   });
 
   /* מפרק רשימה וטווחים למספרי קו. טווח מוגבל ב-500 ערכים כדי
      ש-"1-999999" לא יתקע את הדפדפן. */
   function parseSeries(txt) {
-    var exact = new Set(), ranges = [];
+    var exact = new Set(), ranges = [], bad = [];
     String(txt || '').split(/[,;\s]+/).forEach(function (tok) {
       tok = tok.trim();
       if (!tok) return;
@@ -1206,11 +1212,13 @@
         if (a > b) { var t = a; a = b; b = t; }
         if (b - a > 500) b = a + 500;
         ranges.push([a, b]);
-      } else {
+      } else if (/^\d+$/.test(tok)) {
         exact.add(tok);
+      } else {
+        bad.push(tok);   // השדה מקבל מספרי קו בלבד
       }
     });
-    return { exact: exact, ranges: ranges };
+    return { exact: exact, ranges: ranges, bad: bad };
   }
 
   function seriesMatch(line, spec) {
@@ -1221,35 +1229,15 @@
     return spec.ranges.some(function (r) { return n >= r[0] && n <= r[1]; });
   }
 
-  function applySeries() {
-    var spec = parseSeries($('rSeries').value);
-    if (!spec.exact.size && !spec.ranges.length) {
-      showMsg('warn', 'לא זוהתה סדרת קווים. דוגמה: 402, 404, 410-415');
-      return;
-    }
-    if (!ROUTES.length) { showMsg('warn', 'אין עדיין רשימת קווים — הרץ ניתוח תחילה.'); return; }
-    var hit = new Set();
-    ROUTES.forEach(function (r) {
-      if (!seriesMatch(r.line, spec)) return;
-      hit.add(String(r.line).trim());
-      RSEL.add(r.ri);
-    });
-    $('rq').value = '';
-    $('rFilter').value = 'all';   // אחרת הסדרה שסומנה תיעלם מאחורי סינון הכפולות
-    renderRoutes();
-    var missing = [];
-    spec.exact.forEach(function (x) { if (!hit.has(x)) missing.push(x); });
-    if (!hit.size) {
-      showMsg('warn', 'לא נמצא אף קו תואם בפיד לסדרה שהוזנה.');
-      $('pubNote').textContent = '';
-    } else {
-      $('pubNote').textContent = 'סומנו ' + RSEL.size + ' כיווני נסיעה · ' +
-        hit.size + ' מספרי קו';
-      if (missing.length) {
-        showMsg('info', 'לא נמצאו בפיד הקווים: ' + missing.slice(0, 12).join(', ') +
-          (missing.length > 12 ? ' ועוד ' + (missing.length - 12) : '') + '.');
-      }
-    }
+  /* הודעה ליד שדה הטווח כשהוזן בו משהו שאינו מספר קו */
+  function seriesHint(spec) {
+    var base = 'ארבעת השדות פועלים יחד. טווח מספרי קו מקבל רשימה מופרדת בפסיקים ' +
+      'וטווחים עם מקף. הסימון לייצוא נעשה בטבלה שלמטה, על השורות המסוננות.';
+    if (!spec.bad.length) { $('rFilterHint').classList.remove('bad'); $('rFilterHint').textContent = base; return; }
+    $('rFilterHint').classList.add('bad');
+    $('rFilterHint').textContent = 'שדה טווח מספרי הקו מקבל מספרים בלבד, ולכן ' +
+      (spec.bad.length === 1 ? 'הערך' : 'הערכים') + ' ' +
+      spec.bad.slice(0, 5).join(', ') + ' לא נלקח בחשבון. לחיפוש לפי שם יש להשתמש בחיפוש החופשי.';
   }
 
   /* ---- טווח תאריכים: אותו לוח לכל יום בטווח ---- */
@@ -1275,7 +1263,7 @@
     busy = true;
     setProgress(-1, 'בונה CSV לטווח התאריכים…');
     worker.postMessage({ type: 'exportRoutes', onlyDup: false, maxCols: 80,
-      label: $('rSeries').value || $('rq').value,
+      label: $('rSeries').value || $('rq').value || $('rAgency').value,
       only: shown.map(function (r) { return r.ri; }),
       dates: datesInRange(d.from, d.to) });
   });
@@ -1284,9 +1272,9 @@
     if (!worker) return;
     var shown = publishRoutesList();
     if (!shown.length) { showMsg('warn', 'לא נבחרו קווים ללוח.'); return; }
-    if (shown.length > 40) {
-      showMsg('warn', 'נבחרו ' + shown.length + ' קווים — לוח מודפס נעשה בלתי קריא מעל 40. ' +
-        'צמצם את הבחירה.');
+    if (shown.length > SHEET_MAX) {
+      showMsg('warn', 'הלוח המודפס מוגבל ל-' + SHEET_MAX + ' כיווני נסיעה, ונבחרו ' +
+        shown.length + '. יש לצמצם את הסינון או לסמן פחות שורות.');
       return;
     }
     var d = pubDates();
@@ -1294,7 +1282,7 @@
     setProgress(-1, 'בונה לוח זמנים להפצה…');
     worker.postMessage({ type: 'publishSheet',
       only: shown.map(function (r) { return r.ri; }),
-      label: $('rSeries').value || $('rq').value,
+      label: $('rSeries').value || $('rq').value || $('rAgency').value,
       from: d.from, to: d.to, perTable: 8 });
   });
 
@@ -1314,28 +1302,48 @@
     sel.value = names.indexOf(prev) !== -1 ? prev : '';
   }
 
-  /* לפרסום: הקווים המסומנים ללא תלות בסינון התצוגה — סדרה שסומנה
-     דרך תיבת הסדרה לא תיעלם רק מפני שהטבלה מציגה "רק כפולות". */
-  function publishRoutesList() {
-    if (RSEL.size) return ROUTES.filter(function (r) { return RSEL.has(r.ri); });
-    return visibleRoutes();
+  /* שורת המצב מתחת לסינון: כמה מוצג, כמה מסומן, ומה ייצא בפועל.
+     המגבלה על הלוח המודפס מוצגת ליד הכפתור שאותו היא חוסמת. */
+  var SHEET_MAX = 40;
+  function updateSelBar(nAll, nPicked, nExp) {
+    $('rStatus').innerHTML = 'מסוננים: <b>' + nAll + '</b>' +
+      (nPicked ? ' · מסומנים: <b>' + nPicked + '</b>' : ' · לא סומן דבר') +
+      ' · לייצוא: <b>' + nExp + '</b>';
+    $('rSelAll').disabled = !nAll || nPicked === nAll;
+    $('rSeriesClear').disabled = !RSEL.size;
+    $('exportRoutes').disabled = !nAll;
+    $('pubCsv').disabled = !nAll;
+    var over = nExp > SHEET_MAX;
+    $('pubHtml').disabled = !nAll || over;
+    $('pubNote').classList.toggle('over', over);
+    $('pubNote').textContent = !nAll ? 'אין קווים מסוננים.'
+      : over ? 'הלוח המודפס מוגבל ל-' + SHEET_MAX + ' כיווני נסיעה, ונבחרו ' + nExp +
+        '. יש לצמצם את הסינון או לסמן פחות שורות. ייצוא ה-CSV אינו מוגבל.'
+      : 'הלוח המודפס ייווצר עבור ' + nExp + ' כיווני נסיעה, לכל יום בטווח שנבחר.';
   }
 
-  /* הקווים שיצאו לקובץ: המסומנים מתוך המוצגים, ואם אין — כל המוצגים */
-  function exportRoutesList() {
+  /* כלל אחד לכל שלושת הייצואים: מה שמסומן מתוך המסונן, ואם לא סומן דבר —
+     כל המסונן. כך אי אפשר לייצא קו שאינו מוצג בטבלה. */
+  function chosenRoutes() {
     var vis = visibleRoutes();
     var picked = vis.filter(function (r) { return RSEL.has(r.ri); });
     return picked.length ? picked : vis;
   }
+  var exportRoutesList = chosenRoutes;
+  var publishRoutesList = chosenRoutes;
 
   /* חיפוש חופשי בכל השדות, אך התאמה מדויקת של מספר הקו עולה לראש הרשימה */
   function visibleRoutes() {
     var q = $('rq').value.trim();
     var onlyDup = $('rFilter').value === 'dup';
     var ag = $('rAgency').value;
+    var spec = parseSeries($('rSeries').value);
+    var useSpec = spec.exact.size > 0 || spec.ranges.length > 0;
+    seriesHint(spec);
     var out = ROUTES.filter(function (r) {
       if (onlyDup && !r.dup) return false;
       if (ag && r.agency !== ag) return false;
+      if (useSpec && !seriesMatch(r.line, spec)) return false;
       if (q && (r.line + ' ' + r.long + ' ' + r.ends + ' ' + r.agency + ' ' + r.makat)
         .indexOf(q) === -1) return false;
       return true;
@@ -1373,14 +1381,15 @@
     var all = visibleRoutes();
     var rows = all.slice(0, 800);
     var nPicked = all.filter(function (r) { return RSEL.has(r.ri); }).length;
-    var nExp = exportRoutesList().length;
+    var nExp = nPicked || all.length;
     $('rAll').checked = all.length > 0 && nPicked === all.length;
     $('rAll').indeterminate = nPicked > 0 && nPicked < all.length;
     $('exportRoutes').innerHTML = '<svg class="ic"><use href="#i-download"></use></svg> ייצוא ל-Canva (' +
       nExp + ')';
     $('exportRoutes').title = nPicked
-      ? nPicked + ' קווים מסומנים מתוך ' + all.length + ' תוצאות'
-      : 'לא סומן דבר — ייוצאו כל ' + all.length + ' התוצאות המוצגות';
+      ? nPicked + ' קווים מסומנים מתוך ' + all.length + ' מסוננים'
+      : 'לא סומן דבר, ולכן ייוצאו כל ' + all.length + ' הקווים המסוננים';
+    updateSelBar(all.length, nPicked, nExp);
     document.querySelectorAll('#rTable th[data-rk]').forEach(function (th) {
       th.classList.toggle('on', th.dataset.rk === rSortKey);
       th.classList.toggle('asc', th.dataset.rk === rSortKey && rSortAsc);
@@ -1501,5 +1510,5 @@
     setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
   }
 
-  $('ver').textContent = 'גרסה 2.3.1';
+  $('ver').textContent = 'גרסה 2.3.2';
 })();
