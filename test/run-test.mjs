@@ -374,6 +374,34 @@ const zipD = makeZip({
   check('פיד א׳ — שני רציפים מקושרים', feed.diag.nWithParent, 2);
 }
 
+console.log('\n--- פירוק route_long_name (סעיף ו׳) ---');
+const LN = [
+  ['מבנה/ע.הגרדום-אופקים<->מרכז תחבורתי הארזים-ירושלים-15',
+   'אופקים: מבנה/ע.הגרדום', 'ירושלים: מרכז תחבורתי הארזים'],
+  ['מרכז תחבורתי הארזים/בינעירוני-ירושלים<->קניון איילון-בני ברק-35',
+   'ירושלים: מרכז תחבורתי הארזים/בינעירוני', 'בני ברק: קניון איילון'],
+  ['חיפה-כפר סבא', 'חיפה', 'כפר סבא']
+];
+for (const [raw, a, b] of LN) {
+  const out = Core.routeEnds(raw);
+  check('מוצא: ' + a, out.slice(0, a.length), a);
+  check('יעד: ' + b, out.slice(-b.length), b);
+}
+check('החץ מופיע פעם אחת', (Core.routeEnds(LN[0][0]).match(/←/g) || []).length, 1);
+check('החץ עטוף בסימני LRM כדי שלא יתהפך',
+  /‎←‎/.test(Core.routeEnds(LN[0][0])), true);
+check('שם שלא ניתן לפרק מוחזר כמות שהוא',
+  Core.routeEnds('קו מיוחד ללא מבנה'), 'קו מיוחד ללא מבנה');
+check('שם ריק מחזיר מחרוזת ריקה', Core.routeEnds(''), '');
+check('פירוק מלא מחזיר עיר ותחנה לכל צד',
+  Core.parseLongName(LN[0][0]),
+  { a: { stop: 'מבנה/ע.הגרדום', city: 'אופקים' },
+    b: { stop: 'מרכז תחבורתי הארזים', city: 'ירושלים' } });
+check('חלופה מספרית מוסרת מהצד השני',
+  Core.parseLongName('א-עירא<->ב-עירב-7').b.city, 'עירב');
+check('חלופה בסימן # מוסרת אף היא',
+  Core.parseLongName('א-עירא<->ב-עירב-#').b.city, 'עירב');
+
 console.log('\n--- splitCsv ברמת היחידה ---');
 check('מרכאה באמצע שדה היא תו רגיל', Core.splitCsv('a,b"c,d'), ['a', 'b"c', 'd']);
 check('שדה מצוטט תקני', Core.splitCsv('"a,b",c'), ['a,b', 'c']);

@@ -271,6 +271,14 @@ input.len{width:72px;padding:4px 6px;font-size:12.5px;text-align:center}
 th.chk,td.chk{width:2.4em;text-align:center;padding-inline:6px}
 th.chk input,td.chk input{cursor:pointer;width:16px;height:16px;accent-color:var(--accent)}
 #rBody tr.picked{background:var(--accent-soft)}
+#rTable th[data-rk]{cursor:pointer;user-select:none;white-space:nowrap}
+#rTable th[data-rk]:hover{color:var(--accent)}
+#rTable th[data-rk].on::after{content:' ▾';font-size:10px}
+#rTable th[data-rk].on.asc::after{content:' ▴'}
+/* מספר קו של קו עם יציאות כפולות */
+#rBody b.dupline{color:var(--a)}
+/* חץ הכיוון מבודד לכיווניות כדי שלא יתהפך בתוך טקסט עברי */
+.arr{unicode-bidi:isolate;direction:ltr;color:var(--muted);padding:0 2px}
 .selnote{font-size:12px;color:var(--muted);align-self:center}
 .slot{font-variant-numeric:tabular-nums;border:1px solid var(--line);border-radius:6px;
   padding:3px 8px;font-size:12.5px;background:var(--bg)}
@@ -498,10 +506,12 @@ a{color:var(--accent)}
     <div class="tools">
       <label class="f" style="flex:1;min-width:180px"><span>חיפוש קו</span>
         <input type="text" id="rq" placeholder="מספר קו, מפעיל או מק״ט…"></label>
+      <label class="f"><span>מפעיל</span>
+        <select id="rAgency"><option value="">כל המפעילים</option></select></label>
       <label class="f"><span>הצג</span>
         <select id="rFilter">
-          <option value="dup" selected>רק קווים עם יציאות כפולות</option>
-          <option value="all">כל הקווים</option>
+          <option value="all" selected>כל הקווים</option>
+          <option value="dup">רק קווים עם יציאות כפולות</option>
         </select></label>
       <button id="exportRoutes"><svg class="ic"><use href="#i-download"></use></svg> ייצוא ל-Canva</button>
     </div>
@@ -522,10 +532,12 @@ a{color:var(--accent)}
       <span id="pubNote" class="selnote"></span>
     </div>
     <div class="tblwrap" style="max-height:52vh">
-      <table><thead><tr>
-        <th class="chk"><input type="checkbox" id="rAll" title="סמן/נקה את כל התוצאות המוצגות"></th>
-        <th>קו</th><th>מפעיל</th><th>מסלול</th>
-        <th>יציאות</th><th>שעות</th><th>שעות כפולות</th>
+      <table id="rTable"><thead><tr>
+        <th class="chk"><input type="checkbox" id="rAll" title="סימון או ניקוי של כל התוצאות המוצגות"></th>
+        <th data-rk="line">קו</th><th data-rk="agency">מפעיל</th>
+        <th data-rk="ends">מוצא ויעד</th><th data-rk="makat">מק״ט</th>
+        <th data-rk="total">יציאות</th><th data-rk="slots">שעות</th>
+        <th data-rk="dup">שעות כפולות</th>
       </tr></thead><tbody id="rBody"></tbody></table>
     </div>
     <div id="ttPanel" class="hide"></div>

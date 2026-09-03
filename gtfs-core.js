@@ -278,6 +278,58 @@
     ['רחוב:', 'street'], ['עיר:', 'city'], ['רציף:', 'platform'], ['קומה:', 'floor'],
     ['Street:', 'street'], ['City:', 'city'], ['Platform:', 'platform'], ['Floor:', 'floor']
   ];
+  /* חץ שמאלה עטוף בסימני LRM. החץ מסומן ב-Bidi_Mirrored, ובלי העטיפה
+     דפדפן או אקסל יהפכו אותו לחץ ימינה בתוך טקסט עברי. */
+  const ARROW = '‎←‎';
+
+  /**
+   * מפרק route_long_name של משרד התחבורה לשני קצוות.
+   * המבנה: "<תחנה>-<עיר><->‎<תחנה>-<עיר>-<חלופה>".
+   * פידים ותיקים או מקוצרים כותבים "<עיר>-<עיר>" בלבד, ואז אין שם תחנה.
+   * מחזיר null כשלא ניתן לפרק, והקורא נופל אחורה לשם המקורי.
+   */
+  function parseLongName(long) {
+    const raw = String(long === undefined || long === null ? '' : long).trim();
+    if (!raw) return null;
+
+    const side = function (part, stripAlt) {
+      let t = String(part).trim();
+      if (stripAlt) t = t.replace(/-(?:\d+|#)$/, '').trim();
+      const i = t.lastIndexOf('-');
+      if (i <= 0 || i === t.length - 1) return { city: t, stop: '' };
+      return { stop: t.slice(0, i).trim(), city: t.slice(i + 1).trim() };
+    };
+
+    const k = raw.indexOf('<->');
+    if (k !== -1) {
+      return { a: side(raw.slice(0, k), false), b: side(raw.slice(k + 3), true) };
+    }
+    // מבנה מקוצר: שתי ערים בלבד
+    const parts = raw.replace(/-(?:\d+|#)$/, '').split('-');
+    if (parts.length === 2 && parts[0].trim() && parts[1].trim()) {
+      return { a: { city: parts[0].trim(), stop: '' }, b: { city: parts[1].trim(), stop: '' } };
+    }
+    return null;
+  }
+
+  /** "עיר: תחנה" לצד אחד, או רק העיר כשאין שם תחנה. */
+  function endLabel(e) {
+    if (!e) return '';
+    return e.stop ? e.city + ': ' + e.stop : e.city;
+  }
+
+  /**
+   * תיאור מוצא ויעד לתצוגה ולייצוא: "אופקים: מבנה ← ירושלים: הארזים".
+   * מחזיר את שם המסלול המקורי כשלא ניתן לפרק אותו.
+   */
+  function routeEnds(long) {
+    const p = parseLongName(long);
+    if (!p) return String(long === undefined || long === null ? '' : long);
+    const a = endLabel(p.a), b = endLabel(p.b);
+    if (!a || !b) return a || b || String(long);
+    return a + ' ' + ARROW + ' ' + b;
+  }
+
   function parseStopDesc(d) {
     const res = { street: '', city: '', platform: '', floor: '' };
     if (!d) return res;
@@ -1096,6 +1148,9 @@
     dateObj: dateObj,
     objToStr: objToStr,
     parseStopDesc: parseStopDesc,
+    parseLongName: parseLongName,
+    routeEnds: routeEnds,
+    ARROW: ARROW,
     makeSource: makeSource,
     scanFeed: scanFeed,
     loadStopTimes: loadStopTimes,

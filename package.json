@@ -1,6 +1,6 @@
 {
   "name": "gtfs-platform-crowding",
-  "version": "2.3.0",
+  "version": "2.3.1",
   "description": "כלי דפדפן לזיהוי תחנות ורציפים עם יותר מדי יציאות אוטובוס בו-זמנית מקובץ GTFS",
   "private": true,
   "type": "module",

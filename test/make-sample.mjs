@@ -83,7 +83,10 @@ for (let i = 1; i <= 260; i++) {
   const ag = pick(agencies);
   const rid = 'r' + i;
   const num = 1 + Math.floor(rnd() * 900);
-  routeRows.push([rid, ag[0], num, `"${pick(cities)}-${pick(cities)}"`, `${20000 + i}-1-#`, 3].join(','));
+  // מבנה route_long_name כמו בפיד של משרד התחבורה: תחנה-עיר<->תחנה-עיר-חלופה
+  const cA = pick(cities), cB = pick(cities);
+  const longName = `${pick(streets)}/${pick(streets)}-${cA}<->${pick(streets)}/${pick(streets)}-${cB}-${1 + Math.floor(rnd() * 9)}`;
+  routeRows.push([rid, ag[0], num, `"${longName}"`, `${20000 + i}-1-#`, 3].join(','));
   routes.push(rid);
 }
 

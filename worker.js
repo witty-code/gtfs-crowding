@@ -165,6 +165,7 @@ function routeInfo(ri) {
     line: lineNumber(ri),
     shortName: FEED.routes.short[ri],
     long: FEED.routes.long[ri],
+    ends: GTFSCore.routeEnds(FEED.routes.long[ri]),
     agency: FEED.routes.agency[ri], makat: FEED.routes.desc[ri]
   };
 }
@@ -488,6 +489,57 @@ function dirOrigin(ri, d, TT) {
 /* לוח זמנים מודפס להפצה לציבור                                          */
 /* ==================================================================== */
 
+/* ---------------- תאריך עברי ושם היום ---------------- */
+
+/* גימטריה. מיוצרת בקוד ולא נלקחת מ-Intl, כי Intl מחזיר ספרות
+   ("18 באלול 5786") ולא אותיות, והתצוגה המקובלת בלוח מודפס היא באותיות. */
+const GEM_ONES = ['', 'א', 'ב', 'ג', 'ד', 'ה', 'ו', 'ז', 'ח', 'ט'];
+const GEM_TENS = ['', 'י', 'כ', 'ל', 'מ', 'נ', 'ס', 'ע', 'פ', 'צ'];
+const GEM_HUND = ['', 'ק', 'ר', 'ש', 'ת'];
+
+function gematria(n) {
+  n = Math.floor(Number(n) || 0);
+  if (n <= 0) return '';
+  let out = '';
+  while (n >= 400) { out += 'ת'; n -= 400; }
+  if (n >= 100) { out += GEM_HUND[Math.floor(n / 100)]; n %= 100; }
+  // ט"ו וט"ז במקום י"ה וי"ו, שהם צירופי שם
+  if (n === 15) { out += 'טו'; n = 0; }
+  else if (n === 16) { out += 'טז'; n = 0; }
+  if (n >= 10) { out += GEM_TENS[Math.floor(n / 10)]; n %= 10; }
+  if (n > 0) out += GEM_ONES[n];
+  if (out.length === 1) return out + '׳';
+  return out.slice(0, -1) + '״' + out.slice(-1);
+}
+
+/** "י״ח באלול תשפ״ו" מתוך תאריך YYYYMMDD. ריק אם אין תמיכה בלוח העברי. */
+function hebrewDate(ymd) {
+  try {
+    const d = GTFSCore.dateObj(ymd);
+    const parts = new Intl.DateTimeFormat('he-IL-u-ca-hebrew',
+      { day: 'numeric', month: 'long', year: 'numeric' }).formatToParts(d);
+    let day = '', month = '', year = '';
+    for (const p of parts) {
+      if (p.type === 'day') day = p.value;
+      else if (p.type === 'month') month = p.value;
+      else if (p.type === 'year') year = p.value;
+    }
+    if (!month) return '';
+    // אלפי השנה אינם נכתבים: 5786 נכתב תשפ"ו
+    const y = gematria(parseInt(year, 10) % 1000);
+    return gematria(parseInt(day, 10)) + ' ב' + month + (y ? ' ' + y : '');
+  } catch (e) {
+    return '';
+  }
+}
+
+/* שם היום בלוח. שבת מוצגת כמוצ"ש: בישראל שירות האוטובוסים בשבת
+   מתחיל בפועל בצאת השבת, ולוח שכותרתו "שבת" מטעה את הנוסע. */
+function dayLabel(ymd) {
+  const dow = GTFSCore.dateObj(ymd).getDay();
+  return dow === 6 ? 'מוצ״ש' : 'יום ' + GTFSCore.DAY_HE[dow];
+}
+
 const ORG_CREDIT = 'קו ישיר — הפורום הארצי לקידום תחבורה ציבורית (ע״ר)';
 
 function h(v) {
@@ -509,20 +561,18 @@ function buildPrintSheet(only, dates, perTable) {
   const allow = only && only.length ? only.slice() : null;
   if (!allow) throw new Error('לא נבחרו קווים ללוח.');
 
-  /* עמודה אחת לכל צירוף קו+כיוון, ממוינת לפי מספר הקו */
-  const cols = [];
-  const seen = new Set();
-  for (const day of days) {
-    const tt = ttFor(day);
+  /* העמודות נבנות לכל יום בנפרד: קו שאינו פועל באותו תאריך לא מקבל
+     עמודה כלל, במקום עמודה שכולה מקפים. */
+  const colsFor = function (tt) {
+    const out = [];
     for (const ri of allow) {
       const dirs = tt.get(ri);
       if (!dirs) continue;
       Array.from(dirs.keys()).sort().forEach(function (d) {
-        const key = ri + ':' + d;
-        if (seen.has(key)) return;
-        seen.add(key);
-        cols.push({
-          key: key, ri: ri, d: d,
+        const arr = dirs.get(d) || [];
+        if (!arr.length) return;
+        out.push({
+          key: ri + ':' + d, ri: ri, d: d,
           line: lineNumber(ri),
           name: dirHeadsign(ri, d, tt),
           origin: dirOrigin(ri, d, tt),
@@ -531,22 +581,33 @@ function buildPrintSheet(only, dates, perTable) {
         });
       });
     }
-  }
-  if (!cols.length) throw new Error('אין יציאות לקווים שנבחרו בטווח התאריכים.');
-  cols.sort(function (a, b) {
-    const la = parseInt(a.line, 10), lb = parseInt(b.line, 10);
-    if (!isNaN(la) && !isNaN(lb) && la !== lb) return la - lb;
-    return String(a.line).localeCompare(String(b.line), 'he') || a.d - b.d;
-  });
+    out.sort(function (a, b) {
+      const la = parseInt(a.line, 10), lb = parseInt(b.line, 10);
+      if (!isNaN(la) && !isNaN(lb) && la !== lb) return la - lb;
+      return String(a.line).localeCompare(String(b.line), 'he') || a.d - b.d;
+    });
+    return out;
+  };
 
-  const chunks = [];
-  for (let i = 0; i < cols.length; i += perTable) chunks.push(cols.slice(i, i + perTable));
-
+  const allLines = [];
   const body = [];
-  let anyDup = false;
+  let anyDup = false, anyCol = false;
+  const usedRis = new Set();
 
   for (const day of days) {
     const tt = ttFor(day);
+    const cols = colsFor(tt);
+    cols.forEach(function (c) { if (allLines.indexOf(c.line) === -1) allLines.push(c.line); });
+    cols.forEach(function (c) { usedRis.add(c.ri); });
+
+    body.push('<section class="day">');
+    body.push('<h2>' + h(dayHeading(day)) + '</h2>');
+    if (!cols.length) {
+      body.push('<p class="empty">אין קווים פעילים בתאריך זה מבין הקווים שנבחרו.</p></section>');
+      continue;
+    }
+    anyCol = true;
+
     /* שעות → עמודה → משבצות */
     const grid = new Map();
     let total = 0;
@@ -565,23 +626,17 @@ function buildPrintSheet(only, dates, perTable) {
       }
     }
     const hours = Array.from(grid.keys()).sort(function (a, b) { return a - b; });
-    const dow = day ? GTFSCore.DAY_HE[GTFSCore.dateObj(day).getDay()] : '';
-
-    body.push('<section class="day">');
-    body.push('<h2>' + (day ? h(GTFSCore.fmtDateHe(day)) + ' · יום ' + h(dow)
-      : h(describeDay())) + '</h2>');
-    if (!hours.length) {
-      body.push('<p class="empty">אין יציאות מתוכננות בתאריך זה לקווים שנבחרו.</p></section>');
-      continue;
-    }
     body.push('<p class="sum">' + cols.length + ' כיווני נסיעה · ' + total + ' יציאות</p>');
+
+    const chunks = [];
+    for (let i = 0; i < cols.length; i += perTable) chunks.push(cols.slice(i, i + perTable));
 
     for (const chunk of chunks) {
       body.push('<table><thead><tr><th class="hcol">שעה</th>');
       for (const c of chunk) {
         body.push('<th><span class="ln">' + h(c.line) + '</span>' +
           (c.name ? '<span class="dst">' + h(c.name) + '</span>' : '') +
-          (c.origin ? '<span class="org">מ' + h(c.origin) + '</span>' : '') +
+          (c.origin ? '<span class="org">מ: ' + h(c.origin) + '</span>' : '') +
           '<span class="ag">' + h(c.agency) + '</span></th>');
       }
       body.push('</tr></thead><tbody>');
@@ -596,7 +651,7 @@ function buildPrintSheet(only, dates, perTable) {
             return '<span class="m' + (g.count > 1 ? ' dup' : '') + '"><bdi>' +
               pad2(hr % 24) + ':' + pad2(Math.floor((g.t % 3600) / 60)) + '</bdi>' +
               (g.count > 1 ? '<i>×' + g.count + '</i>' : '') + '</span>';
-          }).join('') : '<span class="none">—</span>') + '</td>');
+          }).join('') : '<span class="none">·</span>') + '</td>');
         }
         body.push('</tr>');
       }
@@ -604,13 +659,22 @@ function buildPrintSheet(only, dates, perTable) {
     }
     body.push('</section>');
   }
+  if (!anyCol) throw new Error('אין יציאות לקווים שנבחרו בטווח התאריכים.');
+
+  /* קווים שנבחרו ואינם פועלים כלל בטווח אינם מקבלים עמודה, ולכן מצוינים
+     בהערה אחת בסוף המסמך כדי שהבחירה תישאר מתועדת. */
+  const idle = [];
+  for (const ri of allow) {
+    if (usedRis.has(ri)) continue;
+    const ln = lineNumber(ri);
+    if (ln && idle.indexOf(ln) === -1) idle.push(ln);
+  }
 
   const range = days.length > 1 && days[0]
     ? GTFSCore.fmtDateHe(days[0]) + ' – ' + GTFSCore.fmtDateHe(days[days.length - 1])
     : (days[0] ? GTFSCore.fmtDateHe(days[0]) : describeDay());
-  const lines = [];
-  cols.forEach(function (c) { if (lines.indexOf(c.line) === -1) lines.push(c.line); });
-  /* כותרת עם 30 מספרי קו אינה כותרת — מקצרים ומציינים כמה נשארו */
+  const lines = allLines.slice();
+  /* כותרת עם 30 מספרי קו אינה כותרת: מקצרים ומציינים כמה נשארו */
   const lineList = lines.length > 10
     ? lines.slice(0, 10).join(', ') + ' ועוד ' + (lines.length - 10)
     : lines.join(', ');
@@ -621,6 +685,11 @@ function buildPrintSheet(only, dates, perTable) {
     HEAD: h('לוח זמנים — קווים ' + lineList),
     RANGE: h(range),
     BODY: body.join('\n'),
+    IDLENOTE: idle.length
+      ? '<p class="dupnote">קווים שנבחרו ואינם פועלים בטווח התאריכים, ולכן אינם מופיעים בלוח: ' +
+        h(idle.slice(0, 30).join(', ')) +
+        (idle.length > 30 ? ' ועוד ' + (idle.length - 30) : '') + '.</p>'
+      : '',
     DUPNOTE: anyDup
       ? '<p class="dupnote">שעה המסומנת <span class="m dup"><bdi>08:15</bdi><i>×2</i></span> ' +
         'היא דקה שבה מתוכננת יציאה של יותר מאוטובוס אחד מאותו קו.</p>'
@@ -639,6 +708,13 @@ function pad2(n) { return n < 10 ? '0' + n : '' + n; }
 function describeDay() {
   if (LAST.opts.date) return GTFSCore.fmtDateHe(LAST.opts.date);
   return 'יום ' + GTFSCore.DAY_HE[LAST.opts.day];
+}
+
+/** כותרת היום בלוח: תאריך לועזי, שם היום ותאריך עברי. */
+function dayHeading(day) {
+  if (!day) return describeDay();
+  const heb = hebrewDate(day);
+  return GTFSCore.fmtDateHe(day) + ' · ' + dayLabel(day) + (heb ? ' · ' + heb : '');
 }
 
 /* תבנית המסמך. עצמאית לחלוטין — בלי גופנים חיצוניים ובלי סקריפטים,
@@ -697,6 +773,7 @@ const PRINT_HTML = [
   '<p class="range"><bdi>{{RANGE}}</bdi></p>',
   '{{BODY}}',
   '{{DUPNOTE}}',
+  '{{IDLENOTE}}',
   '<footer><b>{{CREDIT}}</b><br>',
   'הלוח הופק מקובץ ה-GTFS הרשמי של משרד התחבורה ({{SOURCE}}) בתאריך {{MADE}}.<br>',
   'השעות הן שעות היציאה המתוכננות מתחנת המוצא. ייתכנו שינויים; ',
@@ -768,7 +845,7 @@ function buildRoutesCsv(onlyDup, maxCols, only, dates) {
     const t1 = r.d1.map(slotText), t2 = r.d2.map(slotText);
     const line = [
       lineNumber(r.ri),
-      FEED.routes.long[r.ri],
+      GTFSCore.routeEnds(FEED.routes.long[r.ri]),
       dirHeadsign(r.ri, r.ds[0], r.tt)
     ];
     if (hasD2) line.push(r.ds.length > 1 ? dirHeadsign(r.ri, r.ds[1], r.tt) : '');

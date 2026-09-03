@@ -529,6 +529,90 @@ ok('יש גם עמודה מרוכזת אחת', l2[0].includes('Dir1_Times'));
 ok('יציאות כפולות מסומנות ב-*X', /\*\d/.test(csv2));
 ok('CSV מכיל BOM', csv2.charCodeAt(0) === 0xfeff);
 
+/* --- סעיפים ג׳-ו׳: מפעיל, ברירת מחדל, אדום, מיון ותיאור מוצא-יעד --- */
+console.log('\n=== טבלת הקווים: סינון, מיון ותיאור ===');
+ok('ברירת המחדל היא כל הקווים', (await page.inputValue('#rFilter')) === 'all');
+const agOpts = await page.$$eval('#rAgency option', els => els.map(e => e.textContent.trim()));
+console.log('  מפעילים: ' + agOpts.join(' · '));
+ok('נוסף בורר מפעיל', agOpts.length > 2);
+ok('ברירת המחדל בבורר המפעיל היא כל המפעילים',
+  agOpts[0] === 'כל המפעילים' && (await page.inputValue('#rAgency')) === '');
+const nBefore = await page.$$eval('#rBody tr[data-ri]', els => els.length);
+await page.selectOption('#rAgency', agOpts[1]);
+const agRows = await page.$$eval('#rBody tr[data-ri] td:nth-child(3)',
+  els => Array.from(new Set(els.map(e => e.textContent.trim()))));
+console.log('  לאחר בחירת "' + agOpts[1] + '": ' + agRows.join(', '));
+ok('בחירת מפעיל מציגה רק את קוויו', agRows.length === 1 && agRows[0] === agOpts[1]);
+await page.selectOption('#rAgency', '');
+ok('חזרה לכל המפעילים מחזירה את הרשימה',
+  (await page.$$eval('#rBody tr[data-ri]', els => els.length)) === nBefore);
+
+/* מספר קו של קו עם יציאות כפולות מסומן באדום, ורק שדה מספר הקו */
+const redInfo = await page.evaluate(() => {
+  const tr = Array.from(document.querySelectorAll('#rBody tr[data-ri]'))
+    .find(t => parseInt(t.children[7].textContent, 10) > 0);
+  if (!tr) return null;
+  const b = tr.querySelector('td.num b');
+  return {
+    line: b.textContent.trim(),
+    red: b.classList.contains('dupline'),
+    color: getComputedStyle(b).color,
+    agencyColor: getComputedStyle(tr.children[2]).color
+  };
+});
+console.log('  קו כפול: ' + JSON.stringify(redInfo));
+ok('מספר קו עם יציאות כפולות מסומן', !!redInfo && redInfo.red);
+ok('הצבע שונה משאר השורה', !!redInfo && redInfo.color !== redInfo.agencyColor);
+const plainRed = await page.evaluate(() => {
+  const tr = Array.from(document.querySelectorAll('#rBody tr[data-ri]'))
+    .find(t => parseInt(t.children[7].textContent, 10) === 0);
+  return tr ? tr.querySelector('td.num b').classList.contains('dupline') : false;
+});
+ok('קו ללא יציאות כפולות אינו מסומן', plainRed === false);
+
+/* מיון לפי כל עמודה */
+const sortKeys = await page.$$eval('#rTable th[data-rk]', els => els.map(e => e.dataset.rk));
+console.log('  עמודות מיון: ' + sortKeys.join(', '));
+ok('כל עמודה ניתנת למיון', sortKeys.length === 7);
+const badSorts = [];
+for (const k of sortKeys) {
+  for (let click = 0; click < 2; click++) {          // שני הכיוונים לכל עמודה
+    await page.click('#rTable th[data-rk="' + k + '"]');
+    const st = await page.evaluate((key) => {
+      const th = document.querySelector('#rTable th[data-rk="' + key + '"]');
+      const i = { line: 1, agency: 2, ends: 3, makat: 4, total: 5, slots: 6, dup: 7 }[key];
+      return {
+        asc: th.classList.contains('asc'),
+        vals: Array.from(document.querySelectorAll('#rBody tr[data-ri]'))
+          .slice(0, 15).map(t => t.children[i].textContent.trim())
+      };
+    }, k);
+    const num = st.vals.every(v => /^\d+$/.test(v));
+    const want = st.vals.slice().sort((a, b) => num ? a - b : a.localeCompare(b, 'he'));
+    if (!st.asc) want.reverse();
+    if (JSON.stringify(st.vals) !== JSON.stringify(want)) {
+      badSorts.push(k + (st.asc ? '↑' : '↓') + ': ' + st.vals.slice(0, 5).join(','));
+    }
+  }
+}
+if (badSorts.length) console.log('  כשלי מיון: ' + badSorts.join(' | '));
+ok('מיון עולה ויורד עובד בכל שבע העמודות', badSorts.length === 0);
+const marked = await page.$$eval('#rTable th[data-rk].on', els => els.length);
+ok('העמודה הממוינת מסומנת', marked === 1);
+
+/* מוצא ויעד עם חץ מבודד */
+const endsCell = await page.evaluate(() => {
+  const td = document.querySelector('#rBody tr[data-ri] td.name');
+  const arr = td && td.querySelector('.arr');
+  return td ? { txt: td.textContent.trim(), arrow: arr ? arr.textContent : '',
+    dir: arr ? getComputedStyle(arr).direction : '',
+    bidi: arr ? getComputedStyle(arr).unicodeBidi : '' } : null;
+});
+console.log('  מוצא ויעד: ' + JSON.stringify(endsCell));
+ok('התיאור בנוי "עיר: תחנה ← עיר: תחנה"', !!endsCell && /: .+ ← .+: /.test(endsCell.txt),
+  endsCell && endsCell.txt);
+ok('החץ מבודד לכיווניות', !!endsCell && endsCell.dir === 'ltr' && /isolate/.test(endsCell.bidi));
+
 /* --- סעיף ב׳: השעה המלאה בכל שבב, ובכיווניות מבודדת --- */
 const slotShape = await page.$$eval('#ttPanel .slot bdi', els =>
   els.slice(0, 6).map(e => ({ txt: e.textContent.trim(), dir: getComputedStyle(e).unicodeBidi })));
@@ -691,13 +775,29 @@ ok('משבצת הנפח נמדדה בפועל', progAlign.w1 > 40);
 ok('משבצת הנפח שומרת רוחב קבוע', progAlign.w1 === progAlign.w2);
 ok('המשבצת לא זזה בין עדכונים', progAlign.x1 === progAlign.x2);
 
-console.log('\n=== אזהרת בחירת הפיד ===');
-const feedWarn = await page.$eval('.note.warn', e => e.innerText.replace(/\s+/g, ' '));
-console.log('  ' + feedWarn.slice(0, 170));
-ok('מוצגת אזהרה לפני ההעלאה על בחירת הקובץ', /Gtfs_10_days/.test(feedWarn));
-ok('האזהרה מסבירה מה חסר בפיד המלא',
-  /יציאות כפולות/.test(feedWarn) && /israel-public-transportation/.test(feedWarn));
-ok('האזהרה מקשרת את זה גם לניתוח העומס', /עומס/.test(feedWarn));
+console.log('\n=== הנחיית בחירת הפיד בשלב 1 ===');
+const feedCards = await page.$$eval('#drop ~ .cards .card', els => els.map(e => ({
+  pick: e.classList.contains('pick'),
+  txt: e.innerText.replace(/\s+/g, ' ')
+})));
+feedCards.forEach(c => console.log('  ' + (c.pick ? '★ ' : '  ') + c.txt.slice(0, 130)));
+ok('שני קבצי הפיד מוצגים ככרטיסים', feedCards.length === 2);
+ok('הקובץ לניתוח עומס מסומן ככרטיס הנבחר',
+  feedCards.filter(c => c.pick).length === 1 &&
+  /Gtfs_10_days/.test(feedCards.find(c => c.pick).txt));
+ok('מוסבר מה חסר בפיד המלא',
+  feedCards.some(c => !c.pick && /israel-public-transportation/.test(c.txt) &&
+    /יציאות הכפולות/.test(c.txt) && /עומס/.test(c.txt)));
+const stepLines = await page.$$eval('.steps .stepline', els =>
+  els.map(e => e.innerText.replace(/\s+/g, ' ')));
+console.log('  שלבים: ' + stepLines.length);
+ok('ההוראות מוצגות כשלבים מסודרים עם אייקונים', stepLines.length === 3);
+ok('לכל שלב יש אייקון', (await page.$$('.steps .stepline > svg.ic')).length === 3);
+ok('ההוראות כוללות את בחירת התאריך', stepLines.some(t => /בחירת תאריך/.test(t)));
+/* רישום פורמלי: בלי קו מפריד ארוך ובלי ניסוח שיפוטי בשלב 1 */
+const step1Txt = await page.$eval('section.panel', e => e.innerText);
+ok('אין קו מפריד ארוך בשלב 1', step1Txt.indexOf('\u2014') === -1);
+ok('אין ניסוח לא פורמלי בשלב 1', !/זה משנה/.test(step1Txt));
 /* זיהוי אוטומטי של הפיד המלא לפי שם הקובץ */
 const fullName = path.join(root, 'test/israel-public-transportation.zip');
 fs.copyFileSync(path.join(root, 'test/sample-gtfs.zip'), fullName);

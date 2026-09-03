@@ -330,6 +330,7 @@
 
     } else if (m.type === 'routes') {
       ROUTES = m.rows; RSEL.clear();
+      fillAgencies();
       finish();
       renderRoutes();
 
@@ -1137,8 +1138,31 @@
 
   var RSEL = new Set();   // קווים שסומנו ידנית בתוצאות החיפוש
 
+  var rSortKey = 'dup', rSortAsc = false;
+
   $('rq').addEventListener('input', renderRoutes);
   $('rFilter').addEventListener('change', renderRoutes);
+  $('rAgency').addEventListener('change', renderRoutes);
+
+  /* מיון רשימת הקווים לפי כל עמודה */
+  document.querySelectorAll('#rTable th[data-rk]').forEach(function (th) {
+    th.addEventListener('click', function () {
+      var k = th.dataset.rk;
+      if (rSortKey === k) rSortAsc = !rSortAsc;
+      else { rSortKey = k; rSortAsc = (k === 'line' || k === 'agency' || k === 'ends' || k === 'makat'); }
+      renderRoutes();
+    });
+  });
+
+  /* משווה אחד לכל השדות: מספרי כשאפשר, אחרת השוואת מחרוזות בעברית */
+  function rCmp(a, b, k) {
+    var x = a[k], y = b[k];
+    if (typeof x === 'number' && typeof y === 'number') return x - y;
+    var nx = parseInt(x, 10), ny = parseInt(y, 10);
+    if (!isNaN(nx) && !isNaN(ny) && String(nx) === String(x).trim() &&
+        String(ny) === String(y).trim()) return nx - ny;
+    return String(x === undefined ? '' : x).localeCompare(String(y === undefined ? '' : y), 'he');
+  }
 
   /* סימון/ניקוי של כל התוצאות המוצגות כרגע */
   $('rAll').addEventListener('change', function () {
@@ -1274,6 +1298,22 @@
       from: d.from, to: d.to, perTable: 8 });
   });
 
+  /* רשימת המפעילים נגזרת מהקווים שנטענו, ולא מ-agency.txt, כדי שיוצגו
+     רק מפעילים שיש להם קווים פעילים ביום שנותח. */
+  function fillAgencies() {
+    var prev = $('rAgency').value;
+    var names = [];
+    ROUTES.forEach(function (r) {
+      if (r.agency && names.indexOf(r.agency) === -1) names.push(r.agency);
+    });
+    names.sort(function (a, b) { return a.localeCompare(b, 'he'); });
+    var sel = $('rAgency');
+    sel.innerHTML = '';
+    sel.add(new Option('כל המפעילים', ''));
+    names.forEach(function (n) { sel.add(new Option(n, n)); });
+    sel.value = names.indexOf(prev) !== -1 ? prev : '';
+  }
+
   /* לפרסום: הקווים המסומנים ללא תלות בסינון התצוגה — סדרה שסומנה
      דרך תיבת הסדרה לא תיעלם רק מפני שהטבלה מציגה "רק כפולות". */
   function publishRoutesList() {
@@ -1292,11 +1332,19 @@
   function visibleRoutes() {
     var q = $('rq').value.trim();
     var onlyDup = $('rFilter').value === 'dup';
+    var ag = $('rAgency').value;
     var out = ROUTES.filter(function (r) {
       if (onlyDup && !r.dup) return false;
-      if (q && (r.line + ' ' + r.long + ' ' + r.agency + ' ' + r.makat).indexOf(q) === -1) return false;
+      if (ag && r.agency !== ag) return false;
+      if (q && (r.line + ' ' + r.long + ' ' + r.ends + ' ' + r.agency + ' ' + r.makat)
+        .indexOf(q) === -1) return false;
       return true;
     });
+    /* מיון לפי העמודה שנבחרה, ובתוכה לפי מספר הקו כשובר שוויון */
+    out = out.slice().sort(function (a, b) {
+      return (rSortAsc ? 1 : -1) * rCmp(a, b, rSortKey) || rCmp(a, b, 'line');
+    });
+    /* חיפוש גובר על המיון: התאמה מדויקת של מספר הקו עולה לראש */
     if (q) {
       var rank = function (r) {
         if (String(r.line) === q) return 0;              // מספר הקו בדיוק
@@ -1311,6 +1359,16 @@
     return out;
   }
 
+  /* "אופקים: מבנה ← ירושלים: הארזים" — החץ מבודד לכיווניות */
+  function endsHtml(r) {
+    var t = String(r.ends || r.long || '');
+    var i = t.indexOf('←');
+    if (i === -1) return esc(t);
+    return esc(t.slice(0, i).replace(/[\u200e\u200f]/g, '')) +
+      '<span class="arr">←</span>' +
+      esc(t.slice(i + 1).replace(/[\u200e\u200f]/g, ''));
+  }
+
   function renderRoutes() {
     var all = visibleRoutes();
     var rows = all.slice(0, 800);
@@ -1323,26 +1381,31 @@
     $('exportRoutes').title = nPicked
       ? nPicked + ' קווים מסומנים מתוך ' + all.length + ' תוצאות'
       : 'לא סומן דבר — ייוצאו כל ' + all.length + ' התוצאות המוצגות';
+    document.querySelectorAll('#rTable th[data-rk]').forEach(function (th) {
+      th.classList.toggle('on', th.dataset.rk === rSortKey);
+      th.classList.toggle('asc', th.dataset.rk === rSortKey && rSortAsc);
+    });
     $('rBody').innerHTML = rows.map(function (r) {
       var on = RSEL.has(r.ri);
       return '<tr data-ri="' + r.ri + '"' + (on ? ' class="picked"' : '') + '>' +
         '<td class="chk"><input type="checkbox" data-pick="' + r.ri + '"' +
-          (on ? ' checked' : '') + ' aria-label="בחר את קו ' + esc(r.line) + '"></td>' +
-        '<td class="num"><b>' + esc(r.line) + '</b></td>' +
+          (on ? ' checked' : '') + ' aria-label="בחירת קו ' + esc(r.line) + '"></td>' +
+        '<td class="num"><b' + (r.dup ? ' class="dupline" title="קו עם יציאות כפולות"' : '') +
+          '>' + esc(r.line) + '</b></td>' +
         '<td>' + esc(r.agency) + '</td>' +
-        '<td class="name" style="font-weight:400">' + esc(r.long) +
-          '<small class="tid">' + esc(r.makat) + '</small></td>' +
+        '<td class="name" style="font-weight:400">' + endsHtml(r) + '</td>' +
+        '<td class="num"><small class="tid">' + esc(r.makat) + '</small></td>' +
         '<td class="num">' + r.total + '</td>' +
         '<td class="num">' + r.slots + '</td>' +
         '<td class="num">' + (r.dup ? '<span style="color:var(--a)">' + r.dup + '</span>' : '0') + '</td>' +
         '</tr>';
-    }).join('') || '<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:26px">' +
+    }).join('') || '<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:26px">' +
       'אין קווים תואמים.</td></tr>';
     if (all.length > rows.length) {
       $('rBody').insertAdjacentHTML('beforeend',
-        '<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:10px">' +
+        '<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:10px">' +
         'מוצגות ' + rows.length + ' תוצאות ראשונות מתוך ' + all.length +
-        ' — צמצם את החיפוש כדי לסמן את השאר.</td></tr>');
+        '. ניתן לצמצם את החיפוש כדי לסמן את השאר.</td></tr>');
     }
   }
 
@@ -1386,7 +1449,8 @@
   }
 
   function renderTimetable(m) {
-    var html = ['<h3 style="margin:18px 0 4px">קו ' + esc(m.info.line) + ' — ' + esc(m.info.long) + '</h3>',
+    var html = ['<h3 style="margin:18px 0 4px">קו ' + esc(m.info.line) + ': ' +
+      endsHtml(m.info) + '</h3>',
       '<div class="hint" style="margin-bottom:6px">' + esc(m.info.agency) +
       ' · מק״ט ' + esc(m.info.makat) + ' · ' + esc(describeWhen(lastOpts).split(' · ')[0]) + '</div>'];
     m.dirs.forEach(function (d) {
