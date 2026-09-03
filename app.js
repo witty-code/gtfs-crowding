@@ -312,6 +312,14 @@
       document.querySelectorAll('.wo').forEach(function (n) { n.textContent = lastOpts.winOrigin; });
       document.querySelectorAll('.wm').forEach(function (n) { n.textContent = lastOpts.winMid; });
       render();
+      // אבחנה אמפירית: פיד שאין בו ולו יציאה כפולה אחת הוא כמעט תמיד
+      // הפיד המלא, שבו הנתון הזה פשוט לא קיים
+      if (STATS.departures > 0 && !STATS.flagged) {
+        showMsg('warn', 'נמצאו ' + num(STATS.departures) + ' יציאות, ואף אחת מהן אינה ' +
+          'חופפת ליציאה אחרת מאותו רציף. ממצא זה מצביע על כך שהפיד אינו מכיל את ' +
+          'נתוני היציאות הכפולות. לבדיקת עומס יש להוריד את הקובץ Gtfs_10_days.zip ' +
+          'מכתובת gtfs.mot.gov.il/gtfsfiles ולסרוק שוב.');
+      }
       $('results').scrollIntoView({ behavior: 'smooth', block: 'start' });
 
     } else if (m.type === 'detail') {
@@ -331,6 +339,12 @@
     } else if (m.type === 'export') {
       downloadCsv(m.csv, m.name);
       finish();
+
+    } else if (m.type === 'sheet') {
+      downloadBlob(m.html, m.name, 'text/html;charset=utf-8');
+      finish();
+      showMsg('ok', 'הלוח נוצר (' + m.days + ' ימים). פתח את הקובץ בדפדפן ולחץ ' +
+        '"הדפסה / שמירה כ-PDF" כדי לקבל PDF מוכן להפצה.');
 
     } else if (m.type === 'aborted') {
       showMsg('warn', 'הפעולה בוטלה.');
@@ -393,6 +407,15 @@
       // ברירת מחדל: יום חול טיפוסי (הכי הרבה נסיעות)
       var best = cov.dates.reduce(function (a, b) { return b.trips > a.trips ? b : a; }, cov.dates[0]);
       sel.value = best.date;
+      // אותם תאריכים משמשים גם את טווח הלוח לפרסום
+      ['pubFrom', 'pubTo'].forEach(function (id) {
+        var t = $(id); t.innerHTML = '';
+        cov.dates.forEach(function (x) {
+          t.add(new Option(fmtDateHe(x.date) + '  ·  יום ' + DAY_HE[x.dow], x.date));
+        });
+      });
+      $('pubFrom').value = cov.dates[0].date;
+      $('pubTo').value = cov.dates[cov.dates.length - 1].date;
       $('filterBy').value = 'date';
       $('dateWrap').classList.remove('hide');
       $('dowWrap').classList.add('hide');
@@ -400,6 +423,13 @@
     if (cov.truncated) {
       showMsg('info', 'טווח התאריכים של הפיד ארוך מ-400 ימים; הרשימה נקטעה.');
     }
+    // איזה פיד נטען: יציאות כפולות מופיעות בפועל רק ב-Gtfs_10_days
+    if (/israel[-_ ]?public[-_ ]?transport/i.test(d.source || '')) {
+      showMsg('warn', 'נטען הפיד המלא (' + esc(d.source) + '). קובץ זה אינו מכיל את ' +
+        'נתוני היציאות הכפולות, ולכן ניתוח העומס יציג ערכים נמוכים מן המתוכנן בפועל, ' +
+        'ולעיתים טבלה ריקה. לבדיקת עומס יש להשתמש בקובץ Gtfs_10_days.zip.');
+    }
+
     // למה "רציפים עם תחנת אם" יוצא 0 — שאלה שעולה כמעט תמיד על הפיד הישראלי
     if (!d.nWithParent) {
       showMsg('info', 'אף תחנה בפיד אינה מצביעה על תחנת אם (parent_station ריק בכל השורות)' +
@@ -1129,6 +1159,128 @@
       label: $('rq').value, only: shown.map(function (r) { return r.ri; }) });
   });
 
+  /* ---- סדרת קווים: "402, 404, 410-415" ---- */
+  $('rSeriesGo').addEventListener('click', applySeries);
+  $('rSeries').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') { e.preventDefault(); applySeries(); }
+  });
+  $('rSeriesClear').addEventListener('click', function () {
+    RSEL.clear(); renderRoutes();
+    $('pubNote').textContent = '';
+  });
+
+  /* מפרק רשימה וטווחים למספרי קו. טווח מוגבל ב-500 ערכים כדי
+     ש-"1-999999" לא יתקע את הדפדפן. */
+  function parseSeries(txt) {
+    var exact = new Set(), ranges = [];
+    String(txt || '').split(/[,;\s]+/).forEach(function (tok) {
+      tok = tok.trim();
+      if (!tok) return;
+      var m = /^(\d+)\s*[-–]\s*(\d+)$/.exec(tok);
+      if (m) {
+        var a = parseInt(m[1], 10), b = parseInt(m[2], 10);
+        if (a > b) { var t = a; a = b; b = t; }
+        if (b - a > 500) b = a + 500;
+        ranges.push([a, b]);
+      } else {
+        exact.add(tok);
+      }
+    });
+    return { exact: exact, ranges: ranges };
+  }
+
+  function seriesMatch(line, spec) {
+    var s = String(line).trim();
+    if (spec.exact.has(s)) return true;
+    var n = parseInt(s, 10);
+    if (isNaN(n) || String(n) !== s) return false;
+    return spec.ranges.some(function (r) { return n >= r[0] && n <= r[1]; });
+  }
+
+  function applySeries() {
+    var spec = parseSeries($('rSeries').value);
+    if (!spec.exact.size && !spec.ranges.length) {
+      showMsg('warn', 'לא זוהתה סדרת קווים. דוגמה: 402, 404, 410-415');
+      return;
+    }
+    if (!ROUTES.length) { showMsg('warn', 'אין עדיין רשימת קווים — הרץ ניתוח תחילה.'); return; }
+    var hit = new Set();
+    ROUTES.forEach(function (r) {
+      if (!seriesMatch(r.line, spec)) return;
+      hit.add(String(r.line).trim());
+      RSEL.add(r.ri);
+    });
+    $('rq').value = '';
+    $('rFilter').value = 'all';   // אחרת הסדרה שסומנה תיעלם מאחורי סינון הכפולות
+    renderRoutes();
+    var missing = [];
+    spec.exact.forEach(function (x) { if (!hit.has(x)) missing.push(x); });
+    if (!hit.size) {
+      showMsg('warn', 'לא נמצא אף קו תואם בפיד לסדרה שהוזנה.');
+      $('pubNote').textContent = '';
+    } else {
+      $('pubNote').textContent = 'סומנו ' + RSEL.size + ' כיווני נסיעה · ' +
+        hit.size + ' מספרי קו';
+      if (missing.length) {
+        showMsg('info', 'לא נמצאו בפיד הקווים: ' + missing.slice(0, 12).join(', ') +
+          (missing.length > 12 ? ' ועוד ' + (missing.length - 12) : '') + '.');
+      }
+    }
+  }
+
+  /* ---- טווח תאריכים: אותו לוח לכל יום בטווח ---- */
+  function pubDates() {
+    var a = $('pubFrom').value, b = $('pubTo').value;
+    if (a && b && a > b) { var t = a; a = b; b = t; $('pubFrom').value = a; $('pubTo').value = b; }
+    return { from: a, to: b };
+  }
+
+  /* התאריכים עם שירות בתוך הטווח — נלקחים מכיסוי הפיד שכבר בידינו */
+  function datesInRange(from, to) {
+    if (!COVERAGE || !COVERAGE.dates) return [];
+    return COVERAGE.dates.filter(function (x) {
+      return (!from || x.date >= from) && (!to || x.date <= to);
+    }).map(function (x) { return x.date; });
+  }
+
+  $('pubCsv').addEventListener('click', function () {
+    if (!worker) return;
+    var shown = publishRoutesList();
+    if (!shown.length) { showMsg('warn', 'לא נבחרו קווים.'); return; }
+    var d = pubDates();
+    busy = true;
+    setProgress(-1, 'בונה CSV לטווח התאריכים…');
+    worker.postMessage({ type: 'exportRoutes', onlyDup: false, maxCols: 80,
+      label: $('rSeries').value || $('rq').value,
+      only: shown.map(function (r) { return r.ri; }),
+      dates: datesInRange(d.from, d.to) });
+  });
+
+  $('pubHtml').addEventListener('click', function () {
+    if (!worker) return;
+    var shown = publishRoutesList();
+    if (!shown.length) { showMsg('warn', 'לא נבחרו קווים ללוח.'); return; }
+    if (shown.length > 40) {
+      showMsg('warn', 'נבחרו ' + shown.length + ' קווים — לוח מודפס נעשה בלתי קריא מעל 40. ' +
+        'צמצם את הבחירה.');
+      return;
+    }
+    var d = pubDates();
+    busy = true;
+    setProgress(-1, 'בונה לוח זמנים להפצה…');
+    worker.postMessage({ type: 'publishSheet',
+      only: shown.map(function (r) { return r.ri; }),
+      label: $('rSeries').value || $('rq').value,
+      from: d.from, to: d.to, perTable: 8 });
+  });
+
+  /* לפרסום: הקווים המסומנים ללא תלות בסינון התצוגה — סדרה שסומנה
+     דרך תיבת הסדרה לא תיעלם רק מפני שהטבלה מציגה "רק כפולות". */
+  function publishRoutesList() {
+    if (RSEL.size) return ROUTES.filter(function (r) { return RSEL.has(r.ri); });
+    return visibleRoutes();
+  }
+
   /* הקווים שיצאו לקובץ: המסומנים מתוך המוצגים, ואם אין — כל המוצגים */
   function exportRoutesList() {
     var vis = visibleRoutes();
@@ -1264,6 +1416,16 @@
       busLen: parseFloat($('busLen').value) || 12 });
   });
 
+  function downloadBlob(text, name, mime) {
+    var blob = new Blob([text], { type: mime });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+  }
+
   function downloadCsv(csv, name) {
     var blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
     var a = document.createElement('a');
@@ -1275,5 +1437,5 @@
     setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
   }
 
-  $('ver').textContent = 'גרסה 2.2';
+  $('ver').textContent = 'גרסה 2.3.1';
 })();

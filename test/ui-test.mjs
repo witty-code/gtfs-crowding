@@ -2,6 +2,7 @@
 import { chromium } from 'playwright';
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -528,6 +529,149 @@ ok('יש גם עמודה מרוכזת אחת', l2[0].includes('Dir1_Times'));
 ok('יציאות כפולות מסומנות ב-*X', /\*\d/.test(csv2));
 ok('CSV מכיל BOM', csv2.charCodeAt(0) === 0xfeff);
 
+/* --- סעיף ב׳: השעה המלאה בכל שבב, ובכיווניות מבודדת --- */
+const slotShape = await page.$$eval('#ttPanel .slot bdi', els =>
+  els.slice(0, 6).map(e => ({ txt: e.textContent.trim(), dir: getComputedStyle(e).unicodeBidi })));
+console.log('  שבבי שעה: ' + JSON.stringify(slotShape.slice(0, 3)));
+ok('כל שבב מציג שעה מלאה HH:MM ולא רק דקות',
+  slotShape.length > 0 && slotShape.every(o => /^\d{2}:\d{2}$/.test(o.txt)));
+ok('שבבי השעה מבודדים לכיווניות (הנקודתיים לא מתהפכות)',
+  slotShape.every(o => /isolate/.test(o.dir)));
+const hourShape = await page.$$eval('#ttPanel .tth bdi', els =>
+  els.slice(0, 3).map(e => ({ txt: e.textContent.trim(), dir: getComputedStyle(e).unicodeBidi })));
+ok('כותרת השעה מבודדת אף היא',
+  hourShape.length > 0 && hourShape.every(o => /^\d{2}:00$/.test(o.txt) && /isolate/.test(o.dir)));
+
+/* --- סעיף ד׳: צ׳קבוקסים בתוצאות החיפוש --- */
+const nAll = await page.$$eval('#rBody tr[data-ri]', els => els.length);
+await page.click('#rBody tr[data-ri]:nth-child(1) input[data-pick]');
+await page.click('#rBody tr[data-ri]:nth-child(2) input[data-pick]');
+const btnTxt = await page.textContent('#exportRoutes');
+console.log('  מתוך ' + nAll + ' תוצאות סומנו 2 · כפתור: ' + btnTxt.trim());
+ok('סימון שני קווים מצמצם את הייצוא לשניים', /\(2\)/.test(btnTxt));
+const rowPicked = await page.$$eval('#rBody tr.picked', els => els.length);
+ok('השורות המסומנות מודגשות', rowPicked === 2);
+/* קליק על הצ׳קבוקס לא פותח לוח זמנים של קו אחר */
+const ttHead = await page.textContent('#ttPanel h3');
+
+const dlSel = page.waitForEvent('download', { timeout: 40000 });
+await page.click('#exportRoutes');
+const dSel = await dlSel;
+let csvSel = '';
+for await (const c of await dSel.createReadStream()) csvSel += c;
+const lSel = csvSel.split('\r\n').filter(x => x.length);
+console.log('  קובץ מסומנים: ' + dSel.suggestedFilename() + ' · ' + (lSel.length - 1) + ' שורות');
+ok('הייצוא כולל בדיוק את הקווים שסומנו', lSel.length - 1 === 2);
+/* --- סעיף ג׳: שם הקובץ נושא את הקו/המק״ט, ומנוקה --- */
+ok('שם הקובץ כולל את מספר הקו', /line-/.test(dSel.suggestedFilename()),
+  dSel.suggestedFilename());
+ok('שם הקובץ ASCII וחוקי — בלי נתיבים ובלי סיומת כפולה',
+  /^[0-9A-Za-z_-]+\.csv$/.test(dSel.suggestedFilename()), dSel.suggestedFilename());
+
+/* סימון־הכל מחזיר את כל התוצאות */
+await page.click('#rAll');
+await page.click('#rAll');
+const btnAll = await page.textContent('#exportRoutes');
+ok('ניקוי הסימון מחזיר ייצוא של כל התוצאות המוצגות', btnAll.includes('(' + nAll + ')'));
+
+/* --- סעיף ד׳: חיפוש שמחזיר הרבה תוצאות, וסימון בורר מתוכן --- */
+const someLine = await page.evaluate(() => {
+  const tr = document.querySelector('#rBody tr[data-ri]');
+  return tr ? tr.querySelector('td.num b').textContent.trim() : '';
+});
+await page.fill('#rq', someLine);
+await page.waitForTimeout(150);
+const nHits = await page.$$eval('#rBody tr[data-ri]', els => els.length);
+const firstLine = await page.$eval('#rBody tr[data-ri] td.num b', e => e.textContent.trim());
+console.log('  חיפוש "' + someLine + '" → ' + nHits + ' תוצאות, ראשונה: ' + firstLine);
+ok('התאמה מדויקת של מספר הקו עולה לראש התוצאות', firstLine === someLine);
+await page.click('#rBody tr[data-ri]:nth-child(1) input[data-pick]');
+const btnOne = await page.textContent('#exportRoutes');
+ok('אפשר לבחור קו בודד מתוך תוצאות חיפוש רחבות', /\(1\)/.test(btnOne), btnOne.trim());
+await page.fill('#rq', '');
+await page.waitForTimeout(150);
+
+/* --- סדרת קווים + טווח תאריכים + לוח מודפס --- */
+console.log('\n=== סדרת קווים ולוח לפרסום ===');
+await page.click('#rSeriesClear');
+const lineList = await page.$$eval('#rBody tr[data-ri] td.num b',
+  els => els.map(e => e.textContent.trim()).filter(t => /^\d+$/.test(t)));
+const nums = Array.from(new Set(lineList.map(Number))).sort((a, b) => a - b);
+const seriesTxt = nums[0] + ', ' + nums[1] + '-' + nums[Math.min(3, nums.length - 1)];
+await page.fill('#rSeries', seriesTxt);
+await page.click('#rSeriesGo');
+const picked = await page.$$eval('#rBody tr.picked', els => els.length);
+const note = await page.textContent('#pubNote');
+console.log('  סדרה "' + seriesTxt + '" → ' + picked + ' שורות מסומנות · ' + note.trim());
+ok('סדרת קווים עם טווח מסמנת קווים', picked > 0);
+ok('הסינון עובר ל"כל הקווים" כדי שהסימון יהיה גלוי',
+  (await page.inputValue('#rFilter')) === 'all');
+ok('מוצג סיכום של מה שסומן', /סומנו/.test(note));
+
+/* קלט לא תקין לא מסמן ולא קורס */
+await page.fill('#rSeries', 'שלום');
+await page.click('#rSeriesGo');
+ok('טקסט חופשי מטופל בלי קריסה', true);
+
+await page.fill('#rSeries', seriesTxt);
+await page.click('#rSeriesGo');
+
+const pubDates = await page.$$eval('#pubFrom option', els => els.map(e => e.value));
+console.log('  תאריכים בטווח: ' + pubDates.length + ' (' + pubDates[0] + '…' + pubDates[pubDates.length - 1] + ')');
+ok('רשימת התאריכים לטווח מולאה מהפיד', pubDates.length > 1);
+await page.selectOption('#pubFrom', pubDates[0]);
+await page.selectOption('#pubTo', pubDates[Math.min(2, pubDates.length - 1)]);
+
+const dlRange = page.waitForEvent('download', { timeout: 60000 });
+await page.click('#pubCsv');
+const dR = await dlRange;
+let csvRange = '';
+for await (const c of await dR.createReadStream()) csvRange += c;
+const rowsRange = csvRange.split('\r\n').filter(Boolean);
+const dCol = rowsRange[0].replace(/^﻿/, '').split(',').indexOf('Service_Date');
+const distinctDates = new Set(rowsRange.slice(1).map(r => r.split(',')[dCol]));
+console.log('  CSV טווח: ' + dR.suggestedFilename() + ' · ' + (rowsRange.length - 1) +
+  ' שורות · ' + distinctDates.size + ' תאריכים');
+ok('CSV לטווח מכיל יותר מתאריך אחד', distinctDates.size > 1, String(distinctDates.size));
+ok('שם קובץ הטווח ASCII וחוקי', /^[0-9A-Za-z_-]+\.csv$/.test(dR.suggestedFilename()),
+  dR.suggestedFilename());
+
+const dlSheet = page.waitForEvent('download', { timeout: 60000 });
+await page.click('#pubHtml');
+const dS = await dlSheet;
+let sheetHtml = '';
+for await (const c of await dS.createReadStream()) sheetHtml += c;
+console.log('  לוח: ' + dS.suggestedFilename() + ' · ' + sheetHtml.length + ' תווים');
+ok('הלוח יורד כקובץ HTML', /\.html$/.test(dS.suggestedFilename()), dS.suggestedFilename());
+ok('הלוח הוא מסמך עצמאי', sheetHtml.startsWith('<!doctype html>'));
+ok('הקרדיט לארגון מופיע בלוח', sheetHtml.includes('קו ישיר') &&
+  sheetHtml.includes('הפורום הארצי לקידום תחבורה ציבורית'));
+ok('הודעת ההצלחה מסבירה איך להפיק PDF',
+  /שמירה כ-PDF/.test(await page.textContent('#msgs')));
+
+/* הלוח באמת נפתח ומודפס — נטען לדפדפן ונמדד */
+const sheetPage = await browser.newPage({ viewport: { width: 1180, height: 1000 } });
+await sheetPage.setContent(sheetHtml);
+const tblCount = await sheetPage.$$eval('table', t => t.length);
+const dirOk = await sheetPage.evaluate(() => document.documentElement.dir);
+const dupText = await sheetPage.$$eval('.m.dup bdi', els => els.slice(0, 2).map(e => e.textContent));
+console.log('  בלוח: ' + tblCount + ' טבלאות · dir=' + dirOk + ' · כפולות: ' + dupText.join(', '));
+ok('הלוח נטען ומכיל טבלאות', tblCount > 0);
+ok('הלוח מוגדר RTL', dirOk === 'rtl');
+const printBtnHidden = await sheetPage.evaluate(() => {
+  const b = document.querySelector('.noprint');
+  return b ? getComputedStyle(b).display !== 'none' : false;
+});
+ok('כפתור ההדפסה גלוי על המסך', printBtnHidden);
+const rngTxt = await sheetPage.textContent('.range');
+const rngDir = await sheetPage.$eval('.range bdi', e => getComputedStyle(e).direction);
+console.log('  טווח בכותרת: ' + rngTxt.trim() + ' (' + rngDir + ')');
+ok('טווח התאריכים מבודד ולכן לא מתהפך', rngDir === 'ltr');
+const headTxt = await sheetPage.textContent('h1');
+ok('כותרת עם הרבה קווים מקוצרת', headTxt.length < 120, String(headTxt.length));
+await sheetPage.screenshot({ path: path.join(root, 'test/screenshot-luach.png'), fullPage: false });
+await sheetPage.close();
+
 console.log('\n=== יישור שורת ההתקדמות ===');
 const progAlign = await page.evaluate(() => {
   document.getElementById('progress').classList.add('on');
@@ -546,6 +690,31 @@ console.log('  משבצת הנפח: ' + JSON.stringify(progAlign));
 ok('משבצת הנפח נמדדה בפועל', progAlign.w1 > 40);
 ok('משבצת הנפח שומרת רוחב קבוע', progAlign.w1 === progAlign.w2);
 ok('המשבצת לא זזה בין עדכונים', progAlign.x1 === progAlign.x2);
+
+console.log('\n=== אזהרת בחירת הפיד ===');
+const feedWarn = await page.$eval('.note.warn', e => e.innerText.replace(/\s+/g, ' '));
+console.log('  ' + feedWarn.slice(0, 170));
+ok('מוצגת אזהרה לפני ההעלאה על בחירת הקובץ', /Gtfs_10_days/.test(feedWarn));
+ok('האזהרה מסבירה מה חסר בפיד המלא',
+  /יציאות כפולות/.test(feedWarn) && /israel-public-transportation/.test(feedWarn));
+ok('האזהרה מקשרת את זה גם לניתוח העומס', /עומס/.test(feedWarn));
+/* זיהוי אוטומטי של הפיד המלא לפי שם הקובץ */
+const fullName = path.join(root, 'test/israel-public-transportation.zip');
+fs.copyFileSync(path.join(root, 'test/sample-gtfs.zip'), fullName);
+const p3 = await browser.newPage();
+await p3.goto('http://localhost:8099/index.html');
+await p3.setInputFiles('#file', fullName);
+await p3.waitForSelector('#fileInfo.ok');
+await p3.click('#scan');
+await p3.waitForSelector('#feedInfo.on', { timeout: 120000 });
+const scanMsgs = await p3.textContent('#msgs');
+console.log('  לאחר סריקת קובץ בשם הפיד המלא: ' +
+  (scanMsgs.match(/נטען הפיד המלא[^.]*\./) || ['—'])[0]);
+ok('הפיד המלא מזוהה לפי שם הקובץ ומופקת אזהרה',
+  /נטען הפיד המלא/.test(scanMsgs));
+ok('האזהרה מפנה ל-Gtfs_10_days', /Gtfs_10_days/.test(scanMsgs));
+await p3.close();
+fs.unlinkSync(fullName);
 
 console.log('\n=== כתובת ההורדה הרשמית ===');
 const motLink = await page.$eval('a[href*="gtfs.mot.gov.il"]', e => e.href).catch(() => null);

@@ -1,12 +1,12 @@
 {
   "name": "gtfs-platform-crowding",
-  "version": "2.0.0",
+  "version": "2.3.0",
   "description": "כלי דפדפן לזיהוי תחנות ורציפים עם יותר מדי יציאות אוטובוס בו-זמנית מקובץ GTFS",
   "private": true,
   "type": "module",
   "scripts": {
     "sample": "node test/make-sample.mjs && node test/make-sample.mjs big",
-    "test": "node test/run-test.mjs",
+    "test": "node test/run-test.mjs && node test/export-test.mjs",
     "test:ui": "npm run sample && node test/ui-test.mjs",
     "test:subpath": "node test/subpath-test.mjs",
     "test:all": "npm run test && npm run test:ui && npm run test:subpath",

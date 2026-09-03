@@ -59,6 +59,25 @@ header p{margin:0;color:var(--muted);max-width:70ch}
 #drop b{display:flex;align-items:center;justify-content:center;gap:8px;font-size:16px;margin-bottom:4px}
 #drop span{color:var(--muted);font-size:13.5px}
 #fileInfo{margin-top:12px;font-size:13.5px;color:var(--muted);display:flex;align-items:center;gap:6px}
+/* כרטיסי הנחיה לשלב 1 */
+.cards{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));margin-top:16px}
+.card{border:1px solid var(--line);border-radius:var(--radius);padding:14px 16px;background:var(--bg);
+  display:flex;gap:12px;align-items:flex-start}
+.card.pick{border-color:var(--accent);background:var(--accent-soft)}
+.card > .ic{flex:none;width:22px;height:22px;margin-top:2px;color:var(--muted)}
+.card.pick > .ic{color:var(--accent)}
+.card h3{margin:0 0 3px;font-size:14px;font-weight:700;display:flex;align-items:center;
+  gap:8px;flex-wrap:wrap}
+.card h3 code{font-size:13px}
+.card p{margin:0;font-size:13px;color:var(--muted);line-height:1.5}
+.card .tag{font-size:11px;font-weight:700;border-radius:5px;padding:1px 7px;
+  background:var(--accent);color:#fff}
+.steps{display:grid;gap:14px 20px;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));
+  margin-top:16px;padding-top:14px;border-top:1px solid var(--line)}
+.stepline{display:flex;gap:9px;align-items:flex-start;font-size:13px;color:var(--muted);
+  line-height:1.5}
+.stepline .ic{flex:none;margin-top:2px;color:var(--accent)}
+.stepline b{color:var(--ink);font-weight:600}
 #fileInfo.ok{color:var(--ok)}
 
 /* הגדרות */
@@ -297,8 +316,8 @@ a{color:var(--accent)}
 
 <header>
   <h1>ניתוח עומס רציפים מקובץ GTFS</h1>
-  <p>מזהה תחנות ורציפים שבהם מתוכננות יותר מדי יציאות אוטובוס בו-זמנית. כל העיבוד מתבצע בדפדפן שלך —
-     הקובץ אינו נשלח לשום שרת.</p>
+  <p>זיהוי תחנות ורציפים שבהם מתוכננות יציאות אוטובוס רבות מדי בו-זמנית.
+     כל העיבוד מתבצע בדפדפן. הקובץ אינו נשלח לשרת.</p>
 </header>
 
 <div id="bootMsgs"></div>
@@ -307,23 +326,45 @@ a{color:var(--accent)}
 <section class="panel">
   <h2><span class="step">1</span> קובץ GTFS</h2>
   <div id="drop" tabindex="0" role="button">
-    <b><svg class="ic lg"><use href="#i-upload"></use></svg> גרור לכאן קובץ GTFS.zip</b>
-    <span>או לחץ לבחירה — אפשר גם להעלות קבצי txt בודדים
-      (stops, trips, stop_times, routes, calendar, calendar_dates, agency)</span>
+    <b><svg class="ic lg"><use href="#i-upload"></use></svg> גרירת קובץ GTFS.zip לכאן</b>
+    <span>או לחיצה לבחירת קובץ. ניתן להעלות גם קבצי txt בודדים:
+      stops, trips, stop_times, routes, calendar, calendar_dates, agency</span>
   </div>
   <input type="file" id="file" multiple accept=".zip,.txt" class="hide">
   <div id="fileInfo"></div>
-  <div class="note info" style="margin-top:12px">
-    <svg class="ic lg"><use href="#i-info"></use></svg>
-    <div>אפשר להוריד פיד עדכני מהשרת הרשמי של משרד התחבורה:
-      <a href="https://gtfs.mot.gov.il/gtfsfiles/" target="_blank" rel="noopener">gtfs.mot.gov.il/gtfsfiles<svg class="ic" style="margin-inline-start:4px"><use href="#i-external-link"></use></svg></a><br>
-      <code dir="ltr">israel-public-transportation.zip</code> — הפיד המלא ·
-      <code dir="ltr">Gtfs_10_days.zip</code> — עשרה ימים קדימה.
-      בשני המקרים בחר תאריך מתוך הרשימה שהכלי יזהה, ולא יום בשבוע.</div>
+  <div class="cards">
+    <div class="card pick">
+      <svg class="ic"><use href="#i-check"></use></svg>
+      <div>
+        <h3><code dir="ltr">Gtfs_10_days.zip</code><span class="tag">לניתוח עומס</span></h3>
+        <p>מכיל את נתוני היציאות הכפולות, כלומר יציאה של שני אוטובוסים ומעלה באותה דקה.
+           זהו הקובץ הנדרש לבדיקת עומס על רציף ולהוכחת תכנון לקוי.
+           הקובץ מכסה עשרה ימי שירות קדימה.</p>
+      </div>
+    </div>
+    <div class="card">
+      <svg class="ic"><use href="#i-info"></use></svg>
+      <div>
+        <h3><code dir="ltr">israel-public-transportation.zip</code></h3>
+        <p>הפיד המלא. אינו מכיל את נתוני היציאות הכפולות, ולכן ניתוח עומס המבוסס עליו
+           יציג ערכים נמוכים מן המתוכנן בפועל. מתאים לרשימות קווים ותחנות,
+           למסלולים ולטווח תאריכים רחוק.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="steps">
+    <div class="stepline"><svg class="ic"><use href="#i-download"></use></svg>
+      <div><b>הורדת הקובץ.</b> מהשרת הרשמי של משרד התחבורה:
+        <a href="https://gtfs.mot.gov.il/gtfsfiles/" target="_blank" rel="noopener" dir="ltr">gtfs.mot.gov.il/gtfsfiles</a>
+      </div></div>
+    <div class="stepline"><svg class="ic"><use href="#i-search"></use></svg>
+      <div><b>סריקה.</b> קריאה מהירה של התחנות, הקווים ולוח השנה, ללא קובץ הנסיעות הכבד.</div></div>
+    <div class="stepline"><svg class="ic"><use href="#i-calendar"></use></svg>
+      <div><b>בחירת תאריך.</b> יש לבחור תאריך מתוך הרשימה שתוצג. אין לבחור יום בשבוע.</div></div>
   </div>
   <div class="row">
     <button id="scan" class="primary" disabled><svg class="ic"><use href="#i-search"></use></svg> סרוק את הפיד</button>
-    <span class="hint">שלב מהיר שקורא את התחנות, הקווים ולוח השנה — בלי הקובץ הכבד.</span>
   </div>
 </section>
 
@@ -463,6 +504,22 @@ a{color:var(--accent)}
           <option value="all">כל הקווים</option>
         </select></label>
       <button id="exportRoutes"><svg class="ic"><use href="#i-download"></use></svg> ייצוא ל-Canva</button>
+    </div>
+
+    <div class="tools" id="pubTools">
+      <label class="f" style="flex:1;min-width:200px"><span>סדרת קווים לסימון</span>
+        <input type="text" id="rSeries" placeholder="402, 404, 410-415">
+        <div class="hint">רשימה מופרדת בפסיקים, וטווחים עם מקף. מסמן בטבלה את כל הקווים התואמים.</div></label>
+      <button id="rSeriesGo"><svg class="ic"><use href="#i-check"></use></svg> סמן</button>
+      <button id="rSeriesClear"><svg class="ic"><use href="#i-x"></use></svg> נקה סימון</button>
+    </div>
+
+    <div class="tools" id="pubRange">
+      <label class="f"><span>מתאריך</span><select id="pubFrom"></select></label>
+      <label class="f"><span>עד תאריך</span><select id="pubTo"></select></label>
+      <button id="pubCsv"><svg class="ic"><use href="#i-download"></use></svg> CSV ל-Canva (טווח)</button>
+      <button id="pubHtml" class="primary"><svg class="ic"><use href="#i-file-text"></use></svg> לוח מודפס להפצה</button>
+      <span id="pubNote" class="selnote"></span>
     </div>
     <div class="tblwrap" style="max-height:52vh">
       <table><thead><tr>
