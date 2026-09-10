@@ -297,7 +297,11 @@
 
     } else if (m.type === 'scanned') {
       DIAG = m.diag; COVERAGE = m.coverage;
+      /* פיד חדש — רשימת הקווים ולוח הזמנים שנבנו מן הפיד הקודם אינם תקפים */
+      ROUTES = []; RDATES = []; TTRI = null; TTDATE = null;
+      $('ttPanel').classList.add('hide');
       renderFeedInfo(m.diag, m.coverage);
+      updatePubDays(null);
       (m.warnings || []).forEach(function (w) { showMsg('warn', w); });
       finish();
       $('run').disabled = false;
@@ -305,6 +309,10 @@
 
     } else if (m.type === 'result') {
       ROWS = m.rows; STATS = m.stats;
+      /* ה-worker מאפס את מטמוני לוחות הזמנים בכל ניתוח, ולכן הרשימה
+         שבלשונית לוחות הזמנים אינה תקפה עוד ותיבנה מחדש בפתיחתה. */
+      ROUTES = []; TTRI = null; TTDATE = null;
+      $('ttPanel').classList.add('hide');
       (m.warnings || []).forEach(function (w) { showMsg('warn', w); });
       finish();
       $('results').classList.remove('hide');
@@ -329,8 +337,10 @@
       renderPaths(m);
 
     } else if (m.type === 'routes') {
-      ROUTES = m.rows; RSEL.clear();
+      ROUTES = m.rows; RDATES = m.dates || []; RSEL.clear();
       fillAgencies();
+      updateDupScope();
+      updatePubDays(m.dates);
       finish();
       renderRoutes();
 
@@ -583,9 +593,7 @@
       initMap();
       setTimeout(function () { if (map) { map.invalidateSize(); drawMap(visibleRows()); } }, 60);
     } else if (t === 'routes' && !ROUTES.length && worker) {
-      setProgress(-1, 'בונה לוחות זמנים לכל הקווים…');
-      busy = true;
-      worker.postMessage({ type: 'routes' });
+      requestRoutes();
     }
   }
 
@@ -1134,11 +1142,94 @@
   /* ================= לשונית לוחות זמנים (סעיף ט') ================= */
   var ROUTES = [];
 
+  /* שני מצבים, שתי תחולות זמן:
+     'dup' — יציאות כפולות ביום שנותח בשלב 2. כפילות מוגדרת ביחס ליום בודד.
+     'pub' — לוח להפצה לטווח התאריכים שנבחר כאן, ללא תלות בשלב 2.
+     המצב קובע גם מה נשלח ל-worker וגם אילו עמודות מוצגות. */
+  var RMODE = 'dup';
+  var RDATES = [];                  // ימי השירות שבטווח, כפי שחזרו מה-worker
+  var TTRI = null, TTDATE = null;   // הקו והתאריך המוצגים בפאנל
+
   $('tabRoutes').addEventListener('click', function () { showTab('routes'); });
 
   var RSEL = new Set();   // קווים שסומנו ידנית בתוצאות החיפוש
 
   var rSortKey = 'dup', rSortAsc = false;
+
+  $('modeDup').addEventListener('click', function () { setRoutesMode('dup'); });
+  $('modePub').addEventListener('click', function () { setRoutesMode('pub'); });
+  $('dupScopeLink').addEventListener('click', function (e) {
+    e.preventDefault();
+    $('filterBy').scrollIntoView({ behavior: 'smooth', block: 'center' });
+  });
+
+  /* בקשת רשימת הקווים. בלי טווח — יום הניתוח; עם טווח — איחוד ימי הטווח. */
+  function requestRoutes() {
+    if (!worker) return;
+    var msg = { type: 'routes' };
+    if (RMODE === 'pub') {
+      var d = pubDates();
+      if (!d.from && !d.to) return;      // הפיד עוד לא נסרק
+      msg.from = d.from; msg.to = d.to;
+    }
+    busy = true;
+    setProgress(-1, RMODE === 'pub'
+      ? 'בונה לוחות זמנים לטווח התאריכים…'
+      : 'בונה לוחות זמנים לכל הקווים…');
+    worker.postMessage(msg);
+  }
+
+  function setRoutesMode(m) {
+    if (RMODE === m && ROUTES.length) return;
+    RMODE = m;
+    var pub = m === 'pub';
+    $('modeDup').classList.toggle('on', !pub);
+    $('modePub').classList.toggle('on', pub);
+    $('dupScope').classList.toggle('hide', pub);
+    $('pubScope').classList.toggle('hide', !pub);
+    $('rFilterWrap').classList.toggle('hide', pub);
+    $('exportRoutes').classList.toggle('hide', pub);
+    $('pubCsv').classList.toggle('hide', !pub);
+    $('pubHtml').classList.toggle('hide', !pub);
+    $('rTable').className = pub ? 'm-pub' : 'm-dup';
+    if (pub) $('rFilter').value = 'all';   // הסינון לכפילויות אינו חל כאן
+    rSortKey = pub ? 'days' : 'dup';
+    rSortAsc = false;
+    RSEL.clear();
+    ROUTES = [];
+    TTRI = null; TTDATE = null;
+    $('ttPanel').classList.add('hide');
+    renderRoutes();
+    requestRoutes();
+  }
+
+  /* פרטי הניתוח שהורץ, לשורת התחולה של מצב הכפילויות */
+  function updateDupScope() {
+    if (!lastOpts) { $('dupScopeVals').innerHTML = ''; return; }
+    var when = lastOpts.date
+      ? 'יום ' + DAY_HE[dowOf(lastOpts.date)] + ' · <bdi class="tnum">' +
+        fmtDateHe(lastOpts.date) + '</bdi>'
+      : 'יום ' + DAY_HE[lastOpts.day] + ' — כל התאריכים';
+    $('dupScopeVals').innerHTML =
+      scopeVal('i-calendar', 'תאריך', when) +
+      scopeVal('i-clock', 'טווח שעות', '<bdi class="tnum">' + pad(lastOpts.fromHour) +
+        ':00–' + pad(lastOpts.toHour) + ':59</bdi>') +
+      scopeVal('i-ruler', 'יחידת ניתוח',
+        lastOpts.unit === 'station' ? 'תחנת אם' : 'רציף בודד');
+  }
+  function scopeVal(icon, k, html) {
+    return '<div class="val"><svg class="ic"><use href="#' + icon + '"></use></svg>' +
+      '<span class="k">' + k + '</span> ' + html + '</div>';
+  }
+
+  /* מספר ימי השירות בטווח, לתיבה שליד הבוררים */
+  function updatePubDays(dates) {
+    var n = dates ? dates.length : datesInRange(pubDates().from, pubDates().to).length;
+    var all = (COVERAGE && COVERAGE.dates) ? COVERAGE.dates.length : 0;
+    $('pubDaysBox').innerHTML = all
+      ? '<b>' + n + '</b> מתוך <b>' + all + '</b> ימי הפיד'
+      : '—';
+  }
 
   /* ארבעת השדות מסננים יחד. הסימון לייצוא נעשה על השורות המסוננות בלבד,
      כדי שלא ייבחרו קווים שאינם מוצגים. */
@@ -1247,6 +1338,18 @@
     return { from: a, to: b };
   }
 
+  /* שינוי הטווח מרענן את הרשימה עצמה, ולא רק את הייצוא */
+  ['pubFrom', 'pubTo'].forEach(function (id) {
+    $(id).addEventListener('change', function () {
+      updatePubDays(null);
+      if (RMODE !== 'pub') return;
+      RSEL.clear();
+      TTRI = null; TTDATE = null;
+      $('ttPanel').classList.add('hide');
+      requestRoutes();
+    });
+  });
+
   /* התאריכים עם שירות בתוך הטווח — נלקחים מכיסוי הפיד שכבר בידינו */
   function datesInRange(from, to) {
     if (!COVERAGE || !COVERAGE.dates) return [];
@@ -1315,11 +1418,13 @@
     $('pubCsv').disabled = !nAll;
     var over = nExp > SHEET_MAX;
     $('pubHtml').disabled = !nAll || over;
+    /* ההערה על הלוח המודפס נוגעת למצב ההפצה בלבד */
+    $('pubNote').classList.toggle('hide', RMODE !== 'pub');
     $('pubNote').classList.toggle('over', over);
     $('pubNote').textContent = !nAll ? 'אין קווים מסוננים.'
       : over ? 'הלוח המודפס מוגבל ל-' + SHEET_MAX + ' כיווני נסיעה, ונבחרו ' + nExp +
         '. יש לצמצם את הסינון או לסמן פחות שורות. ייצוא ה-CSV אינו מוגבל.'
-      : 'הלוח המודפס ייווצר עבור ' + nExp + ' כיווני נסיעה, לכל יום בטווח שנבחר.';
+      : 'הלוח המודפס ייווצר עבור ' + nExp + ' כיווני נסיעה, לכל יום הפעלה בטווח שנבחר.';
   }
 
   /* כלל אחד לכל שלושת הייצואים: מה שמסומן מתוך המסונן, ואם לא סומן דבר —
@@ -1335,7 +1440,7 @@
   /* חיפוש חופשי בכל השדות, אך התאמה מדויקת של מספר הקו עולה לראש הרשימה */
   function visibleRoutes() {
     var q = $('rq').value.trim();
-    var onlyDup = $('rFilter').value === 'dup';
+    var onlyDup = RMODE === 'dup' && $('rFilter').value === 'dup';
     var ag = $('rAgency').value;
     var spec = parseSeries($('rSeries').value);
     var useSpec = spec.exact.size > 0 || spec.ranges.length > 0;
@@ -1377,6 +1482,14 @@
       esc(t.slice(i + 1).replace(/[\u200e\u200f]/g, ''));
   }
 
+  /* ימי ההפעלה של הקו מתוך ימי הטווח. קו שאינו פועל בכל הימים מסומן בבירור,
+     שכן זה המקרה שנעדר מן התצוגה עד כה. */
+  function daysTag(r) {
+    var n = r.days || 0, all = RDATES.length;
+    if (!all) return String(n);
+    return '<span class="tag ' + (n >= all ? 'ok' : 'b') + '">' + n + ' מתוך ' + all + '</span>';
+  }
+
   function renderRoutes() {
     var all = visibleRoutes();
     var rows = all.slice(0, 800);
@@ -1384,11 +1497,15 @@
     var nExp = nPicked || all.length;
     $('rAll').checked = all.length > 0 && nPicked === all.length;
     $('rAll').indeterminate = nPicked > 0 && nPicked < all.length;
-    $('exportRoutes').innerHTML = '<svg class="ic"><use href="#i-download"></use></svg> ייצוא ל-Canva (' +
-      nExp + ')';
-    $('exportRoutes').title = nPicked
+    var expTitle = nPicked
       ? nPicked + ' קווים מסומנים מתוך ' + all.length + ' מסוננים'
       : 'לא סומן דבר, ולכן ייוצאו כל ' + all.length + ' הקווים המסוננים';
+    $('exportRoutes').innerHTML = '<svg class="ic"><use href="#i-download"></use></svg> ייצוא ל-Canva (' +
+      nExp + ')';
+    $('pubCsv').innerHTML = '<svg class="ic"><use href="#i-download"></use></svg> ייצוא CSV ל-Canva (' +
+      nExp + ')';
+    $('exportRoutes').title = expTitle;
+    $('pubCsv').title = expTitle;
     updateSelBar(all.length, nPicked, nExp);
     document.querySelectorAll('#rTable th[data-rk]').forEach(function (th) {
       th.classList.toggle('on', th.dataset.rk === rSortKey);
@@ -1399,14 +1516,19 @@
       return '<tr data-ri="' + r.ri + '"' + (on ? ' class="picked"' : '') + '>' +
         '<td class="chk"><input type="checkbox" data-pick="' + r.ri + '"' +
           (on ? ' checked' : '') + ' aria-label="בחירת קו ' + esc(r.line) + '"></td>' +
-        '<td class="num"><b' + (r.dup ? ' class="dupline" title="קו עם יציאות כפולות"' : '') +
+        '<td class="num"><b' + (r.dup && RMODE === 'dup'
+          ? ' class="dupline" title="קו עם יציאות כפולות"' : '') +
           '>' + esc(r.line) + '</b></td>' +
         '<td>' + esc(r.agency) + '</td>' +
         '<td class="name" style="font-weight:400">' + endsHtml(r) + '</td>' +
         '<td class="num"><small class="tid">' + esc(r.makat) + '</small></td>' +
-        '<td class="num">' + r.total + '</td>' +
-        '<td class="num">' + r.slots + '</td>' +
-        '<td class="num">' + (r.dup ? '<span style="color:var(--a)">' + r.dup + '</span>' : '0') + '</td>' +
+        '<td class="num col-dup">' + r.total + '</td>' +
+        '<td class="num col-dup">' + r.slots + '</td>' +
+        '<td class="num col-dup">' +
+          (r.dup ? '<span style="color:var(--a)">' + r.dup + '</span>' : '0') + '</td>' +
+        '<td class="num col-pub">' + daysTag(r) + '</td>' +
+        '<td class="num col-pub">' + (r.nDirs || 0) + '</td>' +
+        '<td class="num col-pub">' + (r.perDay || 0) + '</td>' +
         '</tr>';
     }).join('') || '<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:26px">' +
       'אין קווים תואמים.</td></tr>';
@@ -1428,8 +1550,43 @@
     }
     var tr = e.target.closest('tr');
     if (!tr || !tr.dataset.ri || !worker) return;
-    worker.postMessage({ type: 'timetable', ri: parseInt(tr.dataset.ri, 10) });
+    openTimetable(parseInt(tr.dataset.ri, 10), null);
   });
+
+  /* פתיחת לוח הזמנים של קו. במצב ההפצה נשלח גם הטווח, וה-worker מחזיר את
+     ימי ההפעלה של אותו קו בתוכו ואת התאריך שהוצג בפועל. */
+  function openTimetable(ri, date) {
+    if (!worker) return;
+    TTRI = ri;
+    var msg = { type: 'timetable', ri: ri };
+    if (RMODE === 'pub') {
+      var d = pubDates();
+      msg.from = d.from; msg.to = d.to;
+      if (date) msg.date = date;
+    }
+    worker.postMessage(msg);
+  }
+
+  /* מעבר בין תאריכי הטווח בתוך הפאנל */
+  $('ttPanel').addEventListener('click', function (e) {
+    var b = e.target.closest('button[data-ttdate]');
+    if (!b || TTRI === null) return;
+    openTimetable(TTRI, b.dataset.ttdate);
+  });
+
+  /* סמני התאריך: כל ימי הטווח, כאשר יום שהקו אינו פועל בו מושבת */
+  function dateChips(active, cur) {
+    var on = {};
+    active.forEach(function (d) { on[d] = 1; });
+    return '<div class="ttdates">' + RDATES.map(function (d) {
+      var live = !!on[d];
+      return '<button type="button"' +
+        (live ? ' data-ttdate="' + d + '"' : ' disabled') +
+        (d === cur ? ' class="on"' : '') +
+        ' title="' + (live ? 'הצגת הלוח לתאריך זה' : 'הקו אינו פועל בתאריך זה') + '">' +
+        'יום ' + DAY_HE[dowOf(d)] + '<small>' + fmtDateHe(d).slice(0, 5) + '</small></button>';
+    }).join('') + '</div>';
+  }
 
   /* שורה אחת לכל שעה עגולה, והדקות שבתוכה לצידה */
   function hourRows(slots) {
@@ -1458,10 +1615,20 @@
   }
 
   function renderTimetable(m) {
+    var wasHidden = $('ttPanel').classList.contains('hide');
+    TTRI = m.ri;
+    TTDATE = m.date || null;
+    var when = m.date
+      ? 'יום ' + DAY_HE[dowOf(m.date)] + ' · ' + fmtDateHe(m.date)
+      : describeWhen(lastOpts).split(' · ')[0];
     var html = ['<h3 style="margin:18px 0 4px">קו ' + esc(m.info.line) + ': ' +
       endsHtml(m.info) + '</h3>',
       '<div class="hint" style="margin-bottom:6px">' + esc(m.info.agency) +
-      ' · מק״ט ' + esc(m.info.makat) + ' · ' + esc(describeWhen(lastOpts).split(' · ')[0]) + '</div>'];
+      ' · מק״ט ' + esc(m.info.makat) + ' · ' + esc(when) +
+      (m.dates && m.dates.length && RDATES.length
+        ? ' · ' + m.dates.length + ' ימי הפעלה מתוך ' + RDATES.length + ' בטווח'
+        : '') + '</div>'];
+    if (m.dates && m.dates.length && RDATES.length) html.push(dateChips(m.dates, m.date));
     m.dirs.forEach(function (d) {
       var total = d.slots.reduce(function (a, g) { return a + g.count; }, 0);
       var dup = d.slots.filter(function (g) { return g.count > 1; }).length;
@@ -1473,10 +1640,13 @@
         '</small></h4>' + hourRows(d.slots) + '</div>');
     });
     html.push('<div class="legend">שעה מסומנת באדום = יותר מאוטובוס אחד יוצא באותה דקה. ' +
-      'בייצוא ל-Canva היא מסומנת ב-<code dir="ltr">*X</code>.</div>');
+      'בייצוא ל-Canva היא מסומנת ב-<code dir="ltr">*X</code>.' +
+      (m.date ? ' הלוח מוצג ליום שלם; טווח השעות שנקבע בשלב 2 אינו חל עליו.' : '') +
+      '</div>');
     $('ttPanel').innerHTML = html.join('');
     $('ttPanel').classList.remove('hide');
-    $('ttPanel').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    /* גלילה רק בפתיחה. מעבר בין תאריכי הטווח אינו מזיז את הדף. */
+    if (wasHidden) $('ttPanel').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }
 
   /* ================= ייצוא ================= */
@@ -1510,5 +1680,5 @@
     setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
   }
 
-  $('ver').textContent = 'גרסה 2.3.2';
+  $('ver').textContent = 'גרסה 2.4.0';
 })();

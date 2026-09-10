@@ -571,7 +571,9 @@ const plainRed = await page.evaluate(() => {
 ok('קו ללא יציאות כפולות אינו מסומן', plainRed === false);
 
 /* מיון לפי כל עמודה */
-const sortKeys = await page.$$eval('#rTable th[data-rk]', els => els.map(e => e.dataset.rk));
+// עמודות מצב הכפילויות בלבד; עמודות מצב ההפצה נבדקות בהמשך, במצב שלהן
+const sortKeys = await page.$$eval('#rTable th[data-rk]:not(.col-pub)',
+  els => els.map(e => e.dataset.rk));
 console.log('  עמודות מיון: ' + sortKeys.join(', '));
 ok('כל עמודה ניתנת למיון', sortKeys.length === 7);
 const badSorts = [];
@@ -740,6 +742,59 @@ ok('טקסט לא מספרי בשדה הטווח מתעלם ואינו מסנן'
 ok('מוסבר למשתמש שהשדה מקבל מספרים בלבד',
   badHint.flagged && /מספרים בלבד/.test(badHint.hint));
 
+/* ---- מצב "לוח זמנים להפצה": התחולה עוברת לטווח התאריכים ---- */
+console.log('\n=== מצב לוח זמנים להפצה ===');
+const nDupRows = await page.$$eval('#rBody tr[data-ri]', els => els.length);
+await page.click('#modePub');
+await page.waitForFunction(
+  () => document.querySelectorAll('#rBody tr[data-ri]').length > 0 &&
+    !document.getElementById('pubScope').classList.contains('hide'),
+  null, { timeout: 60000 });
+const modeUi = await page.evaluate(() => ({
+  dupScope: document.getElementById('dupScope').classList.contains('hide'),
+  pubScope: document.getElementById('pubScope').classList.contains('hide'),
+  filterHidden: document.getElementById('rFilterWrap').classList.contains('hide'),
+  expHidden: document.getElementById('exportRoutes').classList.contains('hide'),
+  csvShown: !document.getElementById('pubCsv').classList.contains('hide'),
+  daysCol: document.querySelector('#rTable th[data-rk="days"]').offsetParent !== null,
+  dupCol: document.querySelector('#rTable th[data-rk="dup"]').offsetParent !== null,
+  rows: document.querySelectorAll('#rBody tr[data-ri]').length,
+  partial: document.querySelectorAll('#rBody .tag.b').length,
+  full: document.querySelectorAll('#rBody .tag.ok').length,
+  daysBox: document.getElementById('pubDaysBox').innerText.replace(/\s+/g, ' ')
+}));
+console.log('  שורות: ' + nDupRows + ' → ' + modeUi.rows +
+  ' · ימי הפעלה חלקיים: ' + modeUi.partial + ' · מלאים: ' + modeUi.full);
+console.log('  ' + modeUi.daysBox);
+ok('שורת התחולה מתחלפת עם המצב', modeUi.dupScope && !modeUi.pubScope);
+ok('סינון הכפילויות אינו מוצג במצב ההפצה', modeUi.filterHidden);
+ok('עמודות הטבלה מתחלפות לפי המצב', modeUi.daysCol && !modeUi.dupCol);
+ok('כפתורי הייצוא מתחלפים לפי המצב', modeUi.expHidden && modeUi.csvShown);
+ok('מספר ימי השירות בטווח מוצג ליד הבוררים', /\d+ מתוך \d+/.test(modeUi.daysBox));
+ok('הרשימה אינה קטנה מרשימת יום הניתוח', modeUi.rows >= nDupRows,
+  modeUi.rows + ' מול ' + nDupRows);
+ok('קו שאינו פועל בכל ימי הטווח מסומן ככזה', modeUi.partial > 0,
+  String(modeUi.partial));
+
+await page.click('#rBody tr[data-ri]:first-child');
+await page.waitForSelector('#ttPanel:not(.hide)', { timeout: 20000 });
+const ttChips = await page.$$eval('#ttPanel .ttdates button', els => els.map(e => ({
+  d: e.dataset.ttdate || '', on: e.classList.contains('on'), off: e.disabled })));
+console.log('  סמני תאריך בפאנל: ' + ttChips.length +
+  ' · מושבתים: ' + ttChips.filter(c => c.off).length);
+ok('בפאנל הקו נוסף בורר תאריך של ימי הטווח', ttChips.length > 1, String(ttChips.length));
+ok('מוצג בדיוק תאריך אחד', ttChips.filter(c => c.on).length === 1);
+const other = ttChips.find(c => !c.off && !c.on);
+let switched = false;
+if (other) {
+  await page.click('#ttPanel button[data-ttdate="' + other.d + '"]');
+  switched = await page.waitForFunction(d => {
+    const b = document.querySelector('#ttPanel .ttdates button.on');
+    return !!b && b.dataset.ttdate === d;
+  }, other.d, { timeout: 20000 }).then(() => true, () => false);
+}
+ok('לחיצה על תאריך מחליפה את הלוח המוצג', switched);
+
 /* מגבלת הלוח המודפס מוצגת ליד הכפתור, והכפתור מושבת */
 await page.fill('#rSeries', '');
 await page.click('#rClear');
@@ -855,11 +910,13 @@ ok('הקובץ לניתוח עומס מסומן ככרטיס הנבחר',
 ok('מוסבר מה חסר בפיד המלא',
   feedCards.some(c => !c.pick && /israel-public-transportation/.test(c.txt) &&
     /יציאות הכפולות/.test(c.txt) && /עומס/.test(c.txt)));
-const stepLines = await page.$$eval('.steps .stepline', els =>
+// הוראות שלב 1 בלבד; שורות ה-.stepline שבלשונית לוחות הזמנים אינן חלק מהן
+const stepLines = await page.$$eval('section.panel:has(#drop) .steps .stepline', els =>
   els.map(e => e.innerText.replace(/\s+/g, ' ')));
 console.log('  שלבים: ' + stepLines.length);
 ok('ההוראות מוצגות כשלבים מסודרים עם אייקונים', stepLines.length === 3);
-ok('לכל שלב יש אייקון', (await page.$$('.steps .stepline > svg.ic')).length === 3);
+ok('לכל שלב יש אייקון',
+  (await page.$$('section.panel:has(#drop) .steps .stepline > svg.ic')).length === 3);
 ok('ההוראות כוללות את בחירת התאריך', stepLines.some(t => /בחירת תאריך/.test(t)));
 /* רישום פורמלי: בלי קו מפריד ארוך ובלי ניסוח שיפוטי בשלב 1 */
 const step1Txt = await page.$eval('section.panel', e => e.innerText);

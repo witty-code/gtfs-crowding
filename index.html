@@ -289,6 +289,52 @@ th.chk input,td.chk input{cursor:pointer;width:16px;height:16px;accent-color:var
 .slot{font-variant-numeric:tabular-nums;border:1px solid var(--line);border-radius:6px;
   padding:3px 8px;font-size:12.5px;background:var(--bg)}
 .slot.dup{background:var(--a-bg);color:var(--a);border-color:currentColor;font-weight:700}
+/* בורר המצב של לשונית לוחות הזמנים. שם המצב נושא את יחידת הזמן שבתחולתו */
+.modes{display:flex;margin:16px 0 0;border:1px solid var(--line);border-radius:10px;
+  overflow:hidden;width:max-content;max-width:100%;background:var(--panel)}
+.modes button{border:none;border-radius:0;padding:9px 18px;background:transparent;
+  color:var(--muted);flex-direction:column;align-items:flex-start;gap:1px;text-align:right}
+.modes button + button{border-inline-start:1px solid var(--line)}
+.modes button.on{background:var(--accent-soft);color:var(--accent)}
+.modes b{font-size:13.5px;font-weight:700;display:flex;align-items:center;gap:7px}
+.modes small{font-weight:400;font-size:11.5px;color:var(--muted);
+  display:flex;align-items:center;gap:5px}
+.modes button.on small{color:var(--accent)}
+
+/* שורת התחולה: מציינת איזה בורר שולט על הנתונים שמתחתיה */
+.scope{margin-top:14px;border:1px solid var(--line);border-radius:var(--radius);
+  padding:14px 16px;background:var(--bg)}
+.scope.own{border-color:var(--accent);background:var(--accent-soft)}
+.scope > h3{margin:0 0 11px;font-size:14px;font-weight:700;
+  display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.scope > h3 > .ic{color:var(--muted)}
+.scope.own > h3{color:var(--accent)}
+.scope.own > h3 > .ic{color:var(--accent)}
+.scope > h3 a{font-size:12.5px;font-weight:600;display:inline-flex;align-items:center;gap:5px}
+.scope .tools{margin:0}
+.scope .steps{margin-top:14px;padding-top:13px}
+.scope.own .steps{border-top-color:rgba(29,78,216,.22)}
+.vals{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.val{display:flex;align-items:center;gap:7px;background:var(--panel);border:1px solid var(--line);
+  border-radius:8px;padding:6px 11px;font-size:13.5px;font-weight:600}
+.val > .ic{color:var(--muted)}
+.val span.k{color:var(--muted);font-weight:400;font-size:12px}
+.tag.ok{background:var(--ok-bg);color:var(--ok)}
+.valbox{display:flex;align-items:center;gap:7px;padding:8px 10px;border:1px solid var(--line);
+  border-radius:8px;background:var(--panel);color:var(--muted);font-size:14px;min-width:160px}
+.valbox b{color:var(--ink);font-variant-numeric:tabular-nums}
+/* עמודות הטבלה מתחלפות לפי המצב */
+#rTable.m-pub .col-dup,#rTable.m-dup .col-pub{display:none}
+
+/* בורר התאריך בתוך פאנל הקו — ימי הטווח בלבד */
+.ttdates{display:flex;gap:6px;flex-wrap:wrap;margin:2px 0 6px}
+.ttdates button{padding:5px 11px;font-size:12.5px;flex-direction:column;align-items:center;
+  gap:0;line-height:1.35;min-width:58px}
+.ttdates button.on{background:var(--accent);border-color:var(--accent);color:#fff}
+.ttdates button small{font-weight:400;color:var(--muted);font-size:11px;
+  font-variant-numeric:tabular-nums;unicode-bidi:isolate}
+.ttdates button.on small{color:#dbe4ff}
+
 .ctxbox{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px 11px;
   margin:2px 18px 8px;font-size:12px;line-height:1.8}
 .ctxbox .now{color:var(--a);font-weight:700}
@@ -509,6 +555,58 @@ a{color:var(--accent)}
   <div id="mapWrap"><div id="map"></div></div>
 
   <div id="routesWrap" class="hide">
+
+    <div class="modes" id="rModes">
+      <button id="modeDup" class="on">
+        <b><svg class="ic"><use href="#i-clock"></use></svg> ניתוח יציאות כפולות</b>
+        <small><svg class="ic"><use href="#i-calendar"></use></svg> בתחולת יום הניתוח</small>
+      </button>
+      <button id="modePub">
+        <b><svg class="ic"><use href="#i-file-text"></use></svg> לוח זמנים להפצה</b>
+        <small><svg class="ic"><use href="#i-calendar"></use></svg> בתחולת טווח התאריכים</small>
+      </button>
+    </div>
+
+    <!-- תחולת מצב הכפילויות היא שלב 2, ולכן אין כאן בורר אלא הפניה לשם -->
+    <div class="scope" id="dupScope">
+      <h3><svg class="ic"><use href="#i-settings"></use></svg> נתוני הניתוח שהורץ בשלב 2
+        <a href="#" id="dupScopeLink"><svg class="ic"><use href="#i-chevron-left"></use></svg>
+          מעבר להגדרות הניתוח</a></h3>
+      <div class="vals" id="dupScopeVals"></div>
+      <div class="steps">
+        <div class="stepline"><svg class="ic"><use href="#i-clock"></use></svg>
+          <div><b>הגדרת יציאה כפולה.</b> שתי יציאות ומעלה המתוכננות לאותה דקה מאותו רציף.
+            ההגדרה חלה על יום בודד.</div></div>
+        <div class="stepline"><svg class="ic"><use href="#i-calendar"></use></svg>
+          <div><b>היעדר בורר טווח.</b> במצב זה אין טווח תאריכים. בחירת טווח מתבצעת
+            במצב לוח זמנים להפצה.</div></div>
+        <div class="stepline"><svg class="ic"><use href="#i-alert-triangle"></use></svg>
+          <div><b>מקור הנתונים.</b> נתוני היציאות הכפולות מצויים בקובץ עשרת הימים בלבד.</div></div>
+      </div>
+    </div>
+
+    <!-- הבורר מוצב בראש המצב, מעל הנתונים שבתחולתו -->
+    <div class="scope own hide" id="pubScope">
+      <h3><svg class="ic"><use href="#i-calendar"></use></svg> טווח התאריכים ללוח</h3>
+      <div class="tools">
+        <label class="f"><span>מתאריך</span><select id="pubFrom"></select></label>
+        <label class="f"><span>עד תאריך</span><select id="pubTo"></select></label>
+        <label class="f"><span>ימי שירות בטווח</span>
+          <div class="valbox" id="pubDaysBox">—</div></label>
+      </div>
+      <div class="steps">
+        <div class="stepline"><svg class="ic"><use href="#i-calendar"></use></svg>
+          <div><b>תחולת הבורר.</b> הטווח שנבחר כאן חל על רשימת הקווים שלהלן,
+            על לוח הזמנים של כל קו ועל שני הייצואים.</div></div>
+        <div class="stepline"><svg class="ic"><use href="#i-bus"></use></svg>
+          <div><b>הרכב הרשימה.</b> נכללים כל הקווים והחלופות הפועלים באחד או יותר
+            מימי הטווח, אף אם אינם פועלים בכולם.</div></div>
+        <div class="stepline"><svg class="ic"><use href="#i-settings"></use></svg>
+          <div><b>הפרדה מהגדרות הניתוח.</b> התאריך וטווח השעות שנקבעו בשלב 2
+            אינם חלים על מצב זה.</div></div>
+      </div>
+    </div>
+
     <div class="tools" id="rFilters">
       <label class="f" style="flex:1;min-width:170px"><span>חיפוש חופשי</span>
         <input type="text" id="rq" placeholder="מספר קו, מפעיל או מק״ט…"></label>
@@ -516,7 +614,7 @@ a{color:var(--accent)}
         <input type="text" id="rSeries" placeholder="402, 404, 410-415"></label>
       <label class="f"><span>מפעיל</span>
         <select id="rAgency"><option value="">כל המפעילים</option></select></label>
-      <label class="f"><span>הצג</span>
+      <label class="f" id="rFilterWrap"><span>הצג</span>
         <select id="rFilter">
           <option value="all" selected>כל הקווים</option>
           <option value="dup">רק קווים עם יציאות כפולות</option>
@@ -531,22 +629,21 @@ a{color:var(--accent)}
       <button id="rSelAll" class="sm"><svg class="ic"><use href="#i-check"></use></svg> סימון כל המסוננים</button>
       <button id="rSeriesClear" class="sm"><svg class="ic"><use href="#i-x"></use></svg> ניקוי הסימון</button>
       <button id="exportRoutes"><svg class="ic"><use href="#i-download"></use></svg> ייצוא ל-Canva</button>
-    </div>
-
-    <div class="tools" id="pubRange">
-      <label class="f"><span>מתאריך</span><select id="pubFrom"></select></label>
-      <label class="f"><span>עד תאריך</span><select id="pubTo"></select></label>
-      <button id="pubCsv"><svg class="ic"><use href="#i-download"></use></svg> CSV ל-Canva (טווח)</button>
-      <button id="pubHtml" class="primary"><svg class="ic"><use href="#i-file-text"></use></svg> לוח מודפס להפצה</button>
+      <button id="pubCsv" class="hide"><svg class="ic"><use href="#i-download"></use></svg> ייצוא CSV ל-Canva</button>
+      <button id="pubHtml" class="primary hide"><svg class="ic"><use href="#i-file-text"></use></svg> לוח מודפס להפצה</button>
     </div>
     <div class="hint" id="pubNote"></div>
     <div class="tblwrap" style="max-height:52vh">
-      <table id="rTable"><thead><tr>
+      <table id="rTable" class="m-dup"><thead><tr>
         <th class="chk"><input type="checkbox" id="rAll" title="סימון או ניקוי של כל התוצאות המוצגות"></th>
         <th data-rk="line">קו</th><th data-rk="agency">מפעיל</th>
         <th data-rk="ends">מוצא ויעד</th><th data-rk="makat">מק״ט</th>
-        <th data-rk="total">יציאות</th><th data-rk="slots">שעות</th>
-        <th data-rk="dup">שעות כפולות</th>
+        <th data-rk="total" class="col-dup">יציאות</th>
+        <th data-rk="slots" class="col-dup">שעות</th>
+        <th data-rk="dup" class="col-dup">שעות כפולות</th>
+        <th data-rk="days" class="col-pub">ימי הפעלה בטווח</th>
+        <th data-rk="nDirs" class="col-pub">כיווני נסיעה</th>
+        <th data-rk="perDay" class="col-pub">יציאות ליום הפעלה</th>
       </tr></thead><tbody id="rBody"></tbody></table>
     </div>
     <div id="ttPanel" class="hide"></div>

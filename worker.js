@@ -263,35 +263,37 @@ self.onmessage = async function (e) {
 
     } else if (msg.type === 'routes') {
       if (!LAST) throw new Error('אין תוצאות.');
-      const tt = routeTT();
-      const list = [];
-      tt.forEach(function (dirs, ri) {
-        let total = 0, slots = 0, dup = 0;
-        dirs.forEach(function (arr) {
-          arr.forEach(function (g) { total += g.count; slots++; if (g.count > 1) dup++; });
-        });
-        const info = routeInfo(ri);
-        info.total = total; info.slots = slots; info.dup = dup;
-        info.dirs = Array.from(dirs.keys()).sort();
-        list.push(info);
-      });
-      list.sort(function (a, b) { return b.dup - a.dup || b.total - a.total; });
-      send({ type: 'routes', rows: list });
+      const rdates = (msg.from || msg.to) ? datesInRange(msg.from, msg.to) : null;
+      if (rdates && !rdates.length) throw new Error('אין תאריכים עם שירות בטווח שנבחר.');
+      send({ type: 'routes', rows: routeRows(rdates), dates: rdates || [] });
 
     } else if (msg.type === 'timetable') {
       if (!LAST) throw new Error('אין תוצאות.');
-      const dirs = routeTT().get(msg.ri);
+      /* טווח תאריכים: הלוח מוצג לתאריך אחד מתוך ימי ההפעלה של הקו בטווח.
+         בלי טווח — יום הניתוח, כמו קודם. */
+      const range = (msg.from || msg.to) ? datesInRange(msg.from, msg.to) : null;
+      let active = null, date = msg.date || null;
+      if (range) {
+        active = range.filter(function (d) { return ttFor(d).has(msg.ri); });
+        if (!active.length) throw new Error('הקו אינו פועל באף תאריך בטווח שנבחר.');
+        if (!date || active.indexOf(date) === -1) date = active[0];
+      } else {
+        date = null;
+      }
+      const tt = date ? ttFor(date) : routeTT();
+      const dirs = tt.get(msg.ri);
       if (!dirs) throw new Error('לא נמצא לוח זמנים לקו.');
       const out = [];
       Array.from(dirs.keys()).sort().forEach(function (d) {
         out.push({
           dir: d,
-          name: dirHeadsign(msg.ri, d),
-          origin: dirOrigin(msg.ri, d),
+          name: dirHeadsign(msg.ri, d, tt),
+          origin: dirOrigin(msg.ri, d, tt),
           slots: dirs.get(d).map(function (g) { return { t: g.t, count: g.count }; })
         });
       });
-      send({ type: 'timetable', ri: msg.ri, info: routeInfo(msg.ri), dirs: out, opts: LAST.opts });
+      send({ type: 'timetable', ri: msg.ri, info: routeInfo(msg.ri), dirs: out, opts: LAST.opts,
+        date: date, dates: active || [] });
 
     } else if (msg.type === 'exportRoutes') {
       if (!LAST) throw new Error('אין תוצאות.');
@@ -439,6 +441,52 @@ self.onmessage = async function (e) {
 /* ==================================================================== */
 /* עזרי לוחות זמנים                                                     */
 /* ==================================================================== */
+
+/**
+ * רשימת הקווים ללשונית לוחות הזמנים.
+ * dates ריק  → יום הניתוח בלבד, עם מוני היציאות הכפולות (מצב "כפילויות").
+ * dates מלא  → איחוד כל ימי הטווח, עם מספר ימי ההפעלה של כל קו (מצב "להפצה").
+ * מסתמך על feed.origins שכבר בזיכרון, ולכן אינו קורא שוב את stop_times.
+ */
+function routeRows(dates) {
+  const days = (dates && dates.length) ? dates : [null];
+  const acc = new Map();
+  for (const day of days) {
+    const tt = day ? ttFor(day) : routeTT();
+    tt.forEach(function (dirs, ri) {
+      let a = acc.get(ri);
+      if (!a) { a = { total: 0, slots: 0, dup: 0, days: 0, perDay: 0, dirs: new Set() }; acc.set(ri, a); }
+      let dayTotal = 0;
+      dirs.forEach(function (arr, d) {
+        a.dirs.add(d);
+        for (const g of arr) {
+          a.total += g.count; a.slots++; dayTotal += g.count;
+          if (g.count > 1) a.dup++;
+        }
+      });
+      if (dayTotal) {
+        a.days++;
+        if (dayTotal > a.perDay) a.perDay = dayTotal;
+      }
+    });
+  }
+  const list = [];
+  acc.forEach(function (a, ri) {
+    const info = routeInfo(ri);
+    info.total = a.total; info.slots = a.slots; info.dup = a.dup;
+    info.days = a.days; info.perDay = a.perDay;
+    info.dirs = Array.from(a.dirs).sort();
+    info.nDirs = info.dirs.length;
+    list.push(info);
+  });
+  /* מיון פתיחה לפי מה שכל מצב בא לחפש. המיון בטבלה עצמה נעשה בממשק. */
+  if (dates && dates.length) {
+    list.sort(function (a, b) { return b.days - a.days || b.perDay - a.perDay; });
+  } else {
+    list.sort(function (a, b) { return b.dup - a.dup || b.total - a.total; });
+  }
+  return list;
+}
 
 /** שם היעד הנפוץ ביותר בכיוון נתון — משמש כשם הכיוון בייצוא. */
 function dirHeadsign(ri, d, TT) {
