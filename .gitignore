@@ -3,3 +3,4 @@ package-lock.json
 test/screenshot*.png
 test/sample-gtfs.zip
 test/sample-gtfs-big.zip
+*.patch
