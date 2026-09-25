@@ -1407,7 +1407,7 @@
 
   /* שורת המצב מתחת לסינון: כמה מוצג, כמה מסומן, ומה ייצא בפועל.
      המגבלה על הלוח המודפס מוצגת ליד הכפתור שאותו היא חוסמת. */
-  var SHEET_MAX = 40;
+  var SHEET_MAX = 60;
   function updateSelBar(nAll, nPicked, nExp) {
     $('rStatus').innerHTML = 'מסוננים: <b>' + nAll + '</b>' +
       (nPicked ? ' · מסומנים: <b>' + nPicked + '</b>' : ' · לא סומן דבר') +
